@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+<title>BookAI — AI Receptionist</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<!-- Supabase JS client -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js" crossorigin="anonymous"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{width:100%;height:100%;overflow-x:hidden;}
+  body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;}
+  input,textarea,button{font-family:inherit;}
+  ::-webkit-scrollbar{width:4px;height:4px;}
+  ::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.15);border-radius:4px;}
+  input::placeholder,textarea::placeholder{color:#bbb;}
+  @keyframes typing{0%,80%,100%{transform:scale(0.5);opacity:0.3;}40%{transform:scale(1);opacity:1;}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes pulse{0%,100%{transform:scale(1);opacity:1;}50%{transform:scale(1.12);opacity:0.75;}}
+  @keyframes ring{0%{transform:rotate(0deg);}10%{transform:rotate(18deg);}20%{transform:rotate(-14deg);}30%{transform:rotate(10deg);}40%{transform:rotate(0deg);}100%{transform:rotate(0deg);}}
+  @keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+<div id="root">
+  <div style="height:100vh;display:flex;align-items:center;justify-content:center;background:#060B15;color:#fff;font-family:sans-serif;font-size:15px;">🤖 Loading BookAI…</div>
+</div>
+<script>
+(function(){
+"use strict";
+var e = React.createElement;
+var useState  = React.useState;
+var useRef    = React.useRef;
+var useEffect = React.useEffect;
+
+// ═══════════════════════════════════════════════════════════════
+//  SUPABASE CONFIG — replace with your project values
+//  Get them: https://app.supabase.com → Project → Settings → API
+// ═══════════════════════════════════════════════════════════════
+var SUPABASE_URL      = 'https://lelulsrfhzomhvdgkzpo.supabase.co';
+var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxlbHVsc3JmaHpvbWh2ZGdrenBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyOTIxMjEsImV4cCI6MjA5Nzg2ODEyMX0.UmNp6xzW-WABTHSCvbfhTIj51JxS55z4LefsXPdaXW4';
+var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Comma-separated owner emails that always get Pro (set in .env.local as NEXT_PUBLIC_ADMIN_EMAILS).
+// Injected at runtime if present on window; fallback empty.
+var ADMIN_EMAILS = (window.__BOOKAI_ADMIN_EMAILS || "").split(",").map(function(s){return s.trim().toLowerCase();}).filter(Boolean);
+// Load admin emails from Next.js env (NEXT_PUBLIC_ADMIN_EMAILS) so bookai.html stays static.
+fetch("/api/config").then(function(r){return r.json();}).then(function(cfg){
+  if(cfg && cfg.adminEmails){
+    ADMIN_EMAILS = String(cfg.adminEmails).split(",").map(function(s){return s.trim().toLowerCase();}).filter(Boolean);
+  }
+}).catch(function(){});
+sb
+  .from("businesses")
+  .select("slug,name")
+  .then(function(r){
+    console.log("ALL BUSINESSES:", r);
+  });
+/*
+──────────────────────────────────────────────────────────────────
+  SUPABASE SETUP — run this SQL in Supabase SQL Editor once
+──────────────────────────────────────────────────────────────────
+
+-- 1. Businesses table
+CREATE TABLE businesses (
+  id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id     UUID REFERENCES auth.users(id) NOT NULL UNIQUE,
+  owner_email TEXT,
+  type        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  hours       TEXT,
+  address     TEXT DEFAULT '',
+  color       TEXT,
+  light       TEXT,
+  emoji       TEXT,
+  services    JSONB DEFAULT '[]'::jsonb,
+  faqs        JSONB DEFAULT '[]'::jsonb,
+  greeting    TEXT,
+  owner_phone TEXT DEFAULT '',
+  twilio_phone TEXT DEFAULT '',
+  plan        TEXT DEFAULT 'starter',
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- 2. Appointments table
+CREATE TABLE appointments (
+  id            TEXT PRIMARY KEY,
+  user_id       UUID REFERENCES auth.users(id) NOT NULL,
+  customer_name TEXT NOT NULL,
+  service       TEXT,
+  date          TEXT,
+  time          TEXT,
+  status        TEXT DEFAULT 'confirmed',
+  phone         TEXT DEFAULT '',
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- 3. Row Level Security
+ALTER TABLE businesses   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+
+-- 4. Policies — each user only sees their own data
+CREATE POLICY "own_business"     ON businesses   FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "own_appointments" ON appointments FOR ALL USING (auth.uid() = user_id);
+
+-- 5. IMPORTANT: Supabase Dashboard → Authentication → Settings
+--    → Disable "Confirm email" so signup works immediately.
+──────────────────────────────────────────────────────────────────
+*/
+
+// ═══════════════════════════════════════════════════════════════
+//  DATABASE HELPERS
+// ═══════════════════════════════════════════════════════════════
+
+// Convert DB row → JS biz object
+function bizFromRow(row){
+  if(!row) return null;
+  return {
+    type: row.type, name: row.name, slug: row.slug, hours: row.hours||'',
+    address: row.address||'', color: row.color, light: row.light,
+    emoji: row.emoji, services: row.services||[], faqs: row.faqs||[],
+    greeting: row.greeting||'', ownerPhone: row.owner_phone||'',
+    twilioPhone: row.twilio_phone||'', plan: row.plan||'starter',approval_status: row.approval_status || "pending",
+    logoUrl: row.logo_url||'', coverUrl: row.cover_url||'', gallery: row.gallery||[], phonePublic: row.phone_public||''
+  };
+}
+
+// Convert JS biz object → DB row (requires userId)
+function bizToRow(userId, userEmail, biz){
+  return {
+    user_id: userId,
+    owner_email: userEmail,
+    slug: biz.slug,
+    type: biz.type,
+    name: biz.name,
+    hours: biz.hours || '',
+    address: biz.address || '',
+    color: biz.color,
+    light: biz.light,
+    emoji: biz.emoji,
+    services: biz.services,
+    faqs: biz.faqs,
+    greeting: biz.greeting,
+    owner_phone: biz.ownerPhone || '',
+    twilio_phone: biz.twilioPhone || '',
+    plan: biz.plan || 'starter',
+    approval_status: 'pending',
+    logo_url: biz.logoUrl || '',
+    cover_url: biz.coverUrl || '',
+    gallery: biz.gallery || [],
+    phone_public: biz.phonePublic || '',
+    updated_at: new Date().toISOString()
+  };
+}
+
+
+// Convert DB row → JS appointment object
+function apptFromRow(row){
+  return {
+    id: row.id, name: row.customer_name, service: row.service,
+    date: row.date || row.appointment_date || "", time: row.time, status: row.status, phone: row.phone||''
+  };
+}
+
+async function dbLoadBusiness(userId){
+  var res = await sb.from('businesses').select('*').eq('user_id', userId).maybeSingle();
+  if(res.error) throw res.error;
+  return bizFromRow(res.data);
+}
+
+async function dbSaveBusiness(userId, userEmail, biz){
+  var row = bizToRow(userId, userEmail, biz);
+  var res = await sb.from('businesses').upsert(row, {onConflict:'user_id'});
+  if(res.error) throw res.error;
+}
+
+async function dbLoadAppts(userId){
+  var res = await sb.from('appointments').select('*').eq('user_id', userId).order('created_at', {ascending:true});
+  if(res.error) throw res.error;
+  return (res.data||[]).map(apptFromRow);
+}
+
+async function dbAddAppt(userId, appt){
+  var id = appt.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+  var row = {
+    id: id,
+    user_id: userId,
+    customer_name: appt.name || appt.customer_name || "",
+    service: appt.service || "",
+    date: appt.date || "",
+    time: appt.time || "",
+    status: appt.status || "confirmed",
+    phone: appt.phone || ""
+  };
+  if(!row.customer_name || !row.service || !row.date || !row.time){
+    throw new Error("Incomplete appointment data");
+  }
+  var res = await sb.from("appointments").insert(row);
+  if(res.error){
+    console.error("dbAddAppt error:", res.error);
+    throw res.error;
+  }
+  return row;
+}
+
+async function dbDeleteApptById(id){
+  var res = await sb.from('appointments').delete().eq('id', id);
+  if(res.error) throw res.error;
+}
+
+async function dbDeleteApptByName(userId, name){
+  var res = await sb.from('appointments').delete()
+    .eq('user_id', userId).ilike('customer_name', name);
+  if(res.error) throw res.error;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════
+var G = "linear-gradient(135deg,#00E5A0,#00BCD4)";
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,5); }
+function nowTs(){ return new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}); }
+function slotKey(d,t){ return (d+"|"+t).toLowerCase().trim(); }
+function fmtWA(t){ return String(t).replace(/\*(.*?)\*/g, "<strong>$1</strong>").replace(/\n/g, "<br/>"); }
+
+var TEMPLATES = {
+  salon:{type:"salon",emoji:"💆‍♀️",label:"Salon / Spa",color:"#9C27B0",light:"#F3E5F5",
+    defaultName:"Zara Beauty Salon",defaultHours:"Mon–Sat 10am–8pm · Sunday Closed",
+    services:[{id:1,name:"Haircut",duration:"30 min",price:"Rs. 500",emoji:"✂️"},{id:2,name:"Hair Color",duration:"90 min",price:"Rs. 1,500",emoji:"🎨"},{id:3,name:"Facial",duration:"60 min",price:"Rs. 800",emoji:"💆"},{id:4,name:"Manicure",duration:"45 min",price:"Rs. 600",emoji:"💅"},{id:5,name:"Pedicure",duration:"45 min",price:"Rs. 700",emoji:"🦶"}],
+    faqs:[{q:"Accept walk-ins?",a:"Yes, but appointments get priority."},{q:"Payment methods?",a:"Cash, EasyPaisa, JazzCash."},{q:"Cancellation?",a:"Please cancel 2+ hours before."}],
+    greeting:"Welcome! 💆‍♀️ I'm the AI receptionist for {name}.\n\nHow can I help?\n\n✂️ Book a service\n🔄 Reschedule / Cancel\n❓ Prices & info"},
+  clinic:{type:"clinic",emoji:"🏥",label:"Clinic / Doctor",color:"#0277BD",light:"#E1F5FE",
+    defaultName:"City Medical Clinic",defaultHours:"Mon–Sat 9am–7pm · Sunday 10am–2pm",
+    services:[{id:1,name:"Consultation",duration:"20 min",price:"Rs. 500",emoji:"🩺"},{id:2,name:"Follow-up",duration:"15 min",price:"Rs. 300",emoji:"📋"},{id:3,name:"Blood Test",duration:"10 min",price:"Rs. 400",emoji:"🩸"},{id:4,name:"Vaccination",duration:"15 min",price:"Rs. 200",emoji:"💉"}],
+    faqs:[{q:"Bring old reports?",a:"Yes, all previous records help."},{q:"Fasting for blood test?",a:"Fast 8–10 hrs for glucose."},{q:"Emergency?",a:"Yes, minor emergencies handled."}],
+    greeting:"Welcome! 🏥 I'm the AI receptionist for {name}.\n\n🩺 Book appointment\n📋 Follow-up / Test\n❓ Clinic info"},
+  restaurant:{type:"restaurant",emoji:"🍽️",label:"Restaurant",color:"#BF360C",light:"#FBE9E7",
+    defaultName:"The Royal Kitchen",defaultHours:"Daily 12pm–11pm · Last order 10:30pm",
+    services:[{id:1,name:"Table for 2",duration:"2 hrs",price:"No charge",emoji:"👫"},{id:2,name:"Table for 4",duration:"2 hrs",price:"No charge",emoji:"👨‍👩‍👧‍👦"},{id:3,name:"Table for 6–8",duration:"2.5 hrs",price:"No charge",emoji:"🎉"},{id:4,name:"Birthday Package",duration:"3 hrs",price:"Rs. 3,500",emoji:"🎂"}],
+    faqs:[{q:"Reservation required?",a:"Recommended on weekends."},{q:"Outside cake allowed?",a:"Yes, birthday cakes welcome!"},{q:"Dietary options?",a:"Veg & gluten-free available."}],
+    greeting:"Welcome! 🍽️ Reserve your table at {name}.\n\n🪑 Reserve a table\n🎂 Special occasions\n❓ Menu & info"},
+  gym:{type:"gym",emoji:"💪",label:"Gym / Fitness",color:"#1B5E20",light:"#E8F5E9",
+    defaultName:"Peak Performance Gym",defaultHours:"Mon–Fri 6am–10pm · Sat–Sun 7am–8pm",
+    services:[{id:1,name:"Free Trial",duration:"60 min",price:"Free",emoji:"🎯"},{id:2,name:"Personal Training",duration:"60 min",price:"Rs. 1,200",emoji:"🏋️"},{id:3,name:"Yoga",duration:"60 min",price:"Rs. 600",emoji:"🧘"},{id:4,name:"Group HIIT",duration:"45 min",price:"Rs. 400",emoji:"🔥"}],
+    faqs:[{q:"What to bring?",a:"Clothes, towel, water bottle."},{q:"Membership plans?",a:"Monthly, quarterly, annual."},{q:"Beginners?",a:"All fitness levels welcome!"}],
+    greeting:"Welcome! 💪 I'm the AI receptionist for {name}.\n\n🎯 Book free trial\n🏋️ Schedule session\n❓ Membership info"},
+  dental:{type:"dental",emoji:"🦷",label:"Dental Clinic",color:"#00695C",light:"#E0F2F1",
+    defaultName:"Bright Smile Dental",defaultHours:"Mon–Sat 9am–6pm · Sunday Closed",
+    services:[{id:1,name:"Checkup & Cleaning",duration:"45 min",price:"Rs. 800",emoji:"🦷"},{id:2,name:"Tooth Filling",duration:"60 min",price:"Rs. 1,200",emoji:"🔧"},{id:3,name:"Teeth Whitening",duration:"90 min",price:"Rs. 3,500",emoji:"✨"},{id:4,name:"Root Canal",duration:"90 min",price:"Rs. 4,000",emoji:"💊"}],
+    faqs:[{q:"Will it hurt?",a:"Local anesthesia – mostly painless."},{q:"How often checkup?",a:"Every 6 months is ideal."},{q:"Child friendly?",a:"Yes, pediatric dentist on staff."}],
+    greeting:"Welcome! 🦷 I'm the AI receptionist for {name}.\n\n📅 Book appointment\n❓ Treatment info\n💰 Pricing"}
+};
+
+function buildAIPrompt(biz, appts, isCall){
+
+  var now = new Date();
+  var today = now.toISOString().slice(0,10);
+  var tomorrowDate = new Date(now.getTime()+86400000).toISOString().slice(0,10);
+  var yesterdayDate = new Date(now.getTime()-86400000).toISOString().slice(0,10);
+  var weekday = now.toLocaleDateString("en-US",{weekday:"long"});
+  function nextWeekday(target){
+    var d=new Date(now); var day=d.getDay(); var add=(target-day+7)%7; if(add===0)add=7;
+    d.setDate(d.getDate()+add); return d.toISOString().slice(0,10);
+  }
+  var nextMonday = nextWeekday(1);
+  var nextFriday = nextWeekday(5);
+
+  var booked = appts.length
+    ? appts.map(function(a){
+        return "- "+a.date+" "+a.time+" : "+a.name+" ("+a.service+")";
+      }).join("\n")
+    : "None";
+
+  var services = (Array.isArray(biz.services)?biz.services:[]).map(function(s){
+    return s.name+" | "+s.duration+" | "+s.price;
+  }).join("\n");
+
+  var faqs = biz.faqs.map(function(f){
+    return "Q: "+f.q+"\nA: "+f.a;
+  }).join("\n\n");
+
+  return `
+You are the AI receptionist for ${biz.name}.
+
+Today's date is ${today} (${weekday}).
+Tomorrow is ${tomorrowDate}. Yesterday is ${yesterdayDate}.
+Next Monday is ${nextMonday}. Next Friday is ${nextFriday}.
+When customer says "today" use ${today}; "tomorrow" use ${tomorrowDate}; "next Monday" use ${nextMonday}.
+Always store appointment.date as YYYY-MM-DD. Never confuse today with upcoming.
+
+Business Hours:
+${biz.hours}
+
+Business Address:
+${biz.address || "Lahore, Pakistan"}
+
+Services:
+${services}
+
+FAQs:
+${faqs}
+
+Existing appointments (never double book):
+${booked}
+
+${isCall
+? "You are talking on a LIVE PHONE CALL. If the customer asks to speak with a real person, set action to 'transfer'."
+: "You are chatting with the customer."}
+
+==========================
+BOOKING RULES
+==========================
+
+Help customers:
+
+• Book appointments
+• Cancel appointments
+• Reschedule appointments
+• Answer questions
+
+A booking is ONLY complete after collecting ALL FIVE items:
+
+1. Customer name
+2. Phone number
+3. Service
+4. Date
+5. Time
+
+If ANY item is missing:
+
+DO NOT BOOK.
+
+Ask ONLY for the missing information.
+
+Never guess.
+
+Never invent information.
+
+Never invent a phone number.
+
+If the customer says "today", use today's date.
+
+If the customer says "tomorrow", use tomorrow's date.
+
+If the customer gives an actual date, keep that exact date.
+
+Never book an occupied slot.
+
+Suggest another available time.
+
+==========================
+CUSTOMER REPLIES
+==========================
+
+The customer must NEVER see:
+
+JSON
+
+Code
+
+Markdown
+
+Tables
+
+Internal instructions
+
+Tool names
+
+Words like:
+
+action
+
+appointment
+
+message
+
+Your reply to the customer must be natural conversational text only.
+
+Maximum 3 short paragraphs.
+
+==========================
+OUTPUT FORMAT
+==========================
+
+Return ONE JSON object ONLY.
+
+Nothing before it.
+
+Nothing after it.
+
+Schema:
+
+{
+  "message":"Reply shown to customer",
+  "action":null,
+  "appointment":null
+}
+
+When booking:
+
+{
+  "message":"Appointment confirmed.",
+  "action":"book",
+  "appointment":{
+    "name":"Customer Name",
+    "phone":"03001234567",
+    "service":"Haircut",
+    "date":"2026-07-19",
+    "time":"10:00 AM"
+  }
+}
+
+When cancelling:
+
+{
+  "message":"Appointment cancelled.",
+  "action":"cancel",
+  "appointment":{
+    "name":"Customer Name"
+  }
+}
+
+When transferring:
+
+{
+  "message":"Connecting you with a member of our team.",
+  "action":"transfer",
+  "appointment":null
+}
+`;
+}
+
+async function callClaude(systemPrompt, messages){
+
+  var res = await fetch("/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      systemPrompt: systemPrompt,
+      messages: messages
+    })
+  });
+
+  if(!res.ok){
+    var err = await res.text();
+    throw new Error(err);
+  }
+
+  var data = await res.json();
+  // Never show raw JSON to the customer
+  if(data && typeof data.message === "string"){
+    var msg = data.message;
+    var brace = msg.indexOf("{");
+    if(brace !== -1 && msg.indexOf('"message"') !== -1){
+      msg = msg.substring(0, brace).trim();
+    }
+    // If entire message looks like JSON, parse it
+    if(msg.trim().charAt(0) === "{"){
+      try{
+        var p = JSON.parse(msg);
+        if(p && p.message) msg = String(p.message);
+      }catch(e){}
+    }
+    data.message = msg || data.message;
+  }
+  return data;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  LOADING SCREEN
+// ═══════════════════════════════════════════════════════════════
+function LoadingScreen(props){
+  var msg = props.msg || "Loading…";
+  return e("div",{style:{height:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#060B15",gap:16}},
+    e("div",{style:{width:44,height:44,border:"4px solid rgba(0,229,160,0.2)",borderTopColor:"#00E5A0",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+    e("div",{style:{color:"rgba(255,255,255,0.6)",fontSize:14}}, msg)
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  LANDING PAGE  (unchanged)
+// ═══════════════════════════════════════════════════════════════
+function Landing(props){
+  var onLogin = props.onLogin, onSignup = props.onSignup;
+  var features = [
+    {i:"📞",t:"AI Answers Your Calls",d:"Customers call your number. AI picks up, books the slot, transfers to you if needed."},
+    {i:"💬",t:"WhatsApp-Style Booking",d:"Share one link. Opens like WhatsApp. AI books 24/7, no app needed."},
+    {i:"📅",t:"Zero Double Bookings",d:"AI checks every slot before confirming and offers the next free time."},
+    {i:"⏰",t:"Auto Reminders",d:"AI sends reminders before every appointment. No-shows drop sharply."},
+    {i:"🏪",t:"Live Owner Dashboard",d:"See bookings, manage services & FAQs, message customers directly."},
+    {i:"🌍",t:"Works 24/7",d:"2 AM on Sunday? AI still answers, books, confirms — every time."}
+  ];
+  var plans = [
+    {name:"BookAI",price:"$59",pop:true,col:"#00E5A0",feats:[
+      "AI website chat booking, 24/7",
+      "WhatsApp booking via Meta Cloud API",
+      "AI phone call answering",
+      "Owner dashboard with live bookings",
+      "Unlimited services & FAQs",
+      "Automatic appointment reminders",
+      "Business branding (logo, cover, gallery)",
+      "Priority support"
+    ]}
+  ];
+  function featCard(f){
+    return e("div",{key:f.t,style:{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14,padding:20}},
+      e("div",{style:{fontSize:28,marginBottom:10}},f.i),
+      e("div",{style:{fontWeight:700,fontSize:13,marginBottom:5}},f.t),
+      e("div",{style:{color:"rgba(255,255,255,0.42)",fontSize:12,lineHeight:1.65}},f.d));
+  }
+  function planCard(p){
+    var ch=[];
+    if(p.pop) ch.push(e("div",{key:"b",style:{position:"absolute",top:-9,left:"50%",transform:"translateX(-50%)",background:"linear-gradient(135deg,#7C3AED,#00E5A0)",borderRadius:9,padding:"2px 12px",fontSize:9,fontWeight:800,color:"#fff"}},"MOST POPULAR"));
+    ch.push(e("div",{key:"n",style:{fontWeight:800,fontSize:15,marginBottom:5,color:"#F0F4FF"}},p.name));
+    ch.push(e("div",{key:"pr",style:{fontSize:26,fontWeight:900,color:p.col,marginBottom:12}},p.price,e("span",{style:{fontSize:11,fontWeight:400,color:"rgba(255,255,255,0.3)"}},"/mo")));
+    p.feats.forEach(function(f,i){ ch.push(e("div",{key:"f"+i,style:{fontSize:12,color:"rgba(255,255,255,0.6)",marginBottom:5,display:"flex",gap:7}},e("span",{style:{color:p.col,flexShrink:0}},"✓"),f)); });
+    ch.push(e("button",{key:"btn",onClick:function(){window.location.href="/pricing";},style:{width:"100%",marginTop:14,padding:"10px",border:"none",borderRadius:9,background:G,color:"#060B15",cursor:"pointer",fontSize:12,fontWeight:800}},"Subscribe — see pricing →"));
+    ch.push(e("button",{key:"su",onClick:onSignup,style:{width:"100%",marginTop:8,padding:"9px",border:"1.5px solid rgba(255,255,255,0.2)",borderRadius:9,background:"transparent",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700}},"Create free account first"));
+    return e("div",{key:p.name,style:{background:p.pop?"rgba(124,58,237,0.12)":"rgba(255,255,255,0.03)",border:p.pop?"1.5px solid rgba(124,58,237,0.4)":"1px solid rgba(255,255,255,0.07)",borderRadius:18,padding:22,position:"relative"}},ch);
+  }
+  return e("div",{style:{background:"#060B15",color:"#F0F4FF",minHeight:"100vh"}},
+    e("nav",{style:{padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid rgba(255,255,255,0.07)",position:"sticky",top:0,background:"rgba(6,11,21,0.97)",zIndex:100}},
+      e("div",{style:{display:"flex",alignItems:"center",gap:8,fontWeight:900,fontSize:20}},e("span",null,"🤖"),e("span",{style:{background:G,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}},"BookAI")),
+      e("div",{style:{display:"flex",gap:8}},
+        e("button",{onClick:onLogin,style:{padding:"8px 18px",border:"1.5px solid rgba(255,255,255,0.15)",borderRadius:9,background:"transparent",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:600}},"Log in"),
+        e("button",{onClick:onSignup,style:{padding:"8px 18px",border:"none",borderRadius:9,background:G,color:"#060B15",cursor:"pointer",fontSize:13,fontWeight:800}},"Start Free →"))),
+    e("div",{style:{maxWidth:720,margin:"0 auto",padding:"56px 20px 40px",textAlign:"center"}},
+      e("div",{style:{display:"inline-block",background:"rgba(0,229,160,0.1)",border:"1px solid rgba(0,229,160,0.2)",borderRadius:20,padding:"4px 14px",fontSize:11,color:"#00E5A0",fontWeight:700,marginBottom:20,letterSpacing:"1.5px",textTransform:"uppercase"}},"AI Receptionist · Powered by Claude"),
+      e("h1",{style:{fontSize:"clamp(28px,7vw,48px)",fontWeight:900,lineHeight:1.1,marginBottom:18,letterSpacing:"-1px"}},
+        "Your Business ",e("span",{style:{background:G,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}},"Never Misses")," a Booking"),
+      e("p",{style:{fontSize:15,color:"rgba(240,244,255,0.5)",lineHeight:1.8,marginBottom:28,maxWidth:440,marginLeft:"auto",marginRight:"auto"}},"AI answers calls, replies on WhatsApp, and books appointments 24/7 — while you focus on your work."),
+      e("div",{style:{display:"flex",gap:11,flexWrap:"wrap",justifyContent:"center"}},
+        e("button",{onClick:onSignup,style:{padding:"13px 28px",border:"none",borderRadius:12,background:G,color:"#060B15",cursor:"pointer",fontSize:14,fontWeight:900,boxShadow:"0 8px 28px rgba(0,229,160,0.3)"}},"🚀 Start Free Trial"),
+        e("button",{onClick:onLogin,style:{padding:"13px 22px",border:"1.5px solid rgba(255,255,255,0.12)",borderRadius:12,background:"rgba(255,255,255,0.04)",color:"rgba(255,255,255,0.75)",cursor:"pointer",fontSize:13,fontWeight:600}},"View Demo →")),
+      e("div",{style:{marginTop:22,display:"flex",gap:7,flexWrap:"wrap",justifyContent:"center"}},
+        ["💆‍♀️ Salons","🏥 Clinics","🍽️ Restaurants","💪 Gyms","🦷 Dental","🛒 Retail"].map(function(b){
+          return e("span",{key:b,style:{fontSize:11,padding:"4px 11px",borderRadius:18,background:"rgba(255,255,255,0.04)",color:"rgba(255,255,255,0.38)",border:"1px solid rgba(255,255,255,0.07)"}},b);}))
+    ),
+    e("div",{style:{maxWidth:960,margin:"0 auto",padding:"40px 20px",borderTop:"1px solid rgba(255,255,255,0.05)"}},
+      e("h2",{style:{textAlign:"center",fontSize:"clamp(18px,4vw,28px)",fontWeight:900,marginBottom:8}},"Everything your receptionist does — automated"),
+      e("p",{style:{textAlign:"center",color:"rgba(255,255,255,0.4)",marginBottom:30,fontSize:13}},"Save Rs. 15,000–25,000/month on staff. Zero sick days. Zero missed calls."),
+      e("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))",gap:12}},features.map(featCard))),
+    e("div",{style:{maxWidth:680,margin:"0 auto",padding:"44px 20px"}},
+      e("h2",{style:{textAlign:"center",fontSize:"clamp(18px,4vw,28px)",fontWeight:900,marginBottom:8}},"Simple pricing"),
+      e("p",{style:{textAlign:"center",color:"rgba(255,255,255,0.4)",marginBottom:30,fontSize:13}},"One plan. Everything included. Localized checkout · cancel anytime."),
+      e("div",{style:{display:"grid",gridTemplateColumns:"1fr",gap:14,maxWidth:420,margin:"0 auto"}},plans.map(planCard))),
+    e("div",{style:{padding:"22px 20px",borderTop:"1px solid rgba(255,255,255,0.06)",textAlign:"center",color:"rgba(255,255,255,0.28)",fontSize:12}},
+      e("div",{style:{fontWeight:900,fontSize:16,marginBottom:5,background:G,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",display:"inline-block"}},"🤖 BookAI"),
+      e("div",null,"AI Receptionist for Small Businesses · Made in Pakistan 🇵🇰"),e("div",{style:{marginTop:14,display:"flex",gap:16,justifyContent:"center",flexWrap:"wrap"}},e("a",{href:"/privacy",style:{color:"rgba(255,255,255,0.35)",fontSize:12,textDecoration:"none"}},"Privacy Policy"),e("a",{href:"/terms",style:{color:"rgba(255,255,255,0.35)",fontSize:12,textDecoration:"none"}},"Terms of Service"),e("a",{href:"/refund",style:{color:"rgba(255,255,255,0.35)",fontSize:12,textDecoration:"none"}},"Refund Policy"),e("a",{href:"/pricing",style:{color:"rgba(255,255,255,0.35)",fontSize:12,textDecoration:"none"}},"Pricing"))));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  AUTH SCREEN  — now uses Supabase auth
+// ═══════════════════════════════════════════════════════════════
+function AuthScreen(props){
+  var mode=props.mode, onDone=props.onDone, onSwitch=props.onSwitch, onBack=props.onBack;
+  var s1=useState(1),    step=s1[0],     setStep=s1[1];
+  var s2=useState(""),   ownerName=s2[0],setOwnerName=s2[1];
+  var s3=useState(""),   email=s3[0],    setEmail=s3[1];
+  var s4=useState(""),   pw=s4[0],       setPw=s4[1];
+  var s5=useState(""),   bizType=s5[0],  setBizType=s5[1];
+  var s6=useState(""),   bizName=s6[0],  setBizName=s6[1];
+  var s7=useState(""),   bizHours=s7[0], setBizHours=s7[1];
+  var s8=useState(""),   bizAddr=s8[0],  setBizAddr=s8[1];
+  var s9=useState(""),   err=s9[0],      setErr=s9[1];
+  var s10=useState(false),busy=s10[0],   setBusy=s10[1];
+
+  var F={width:"100%",padding:"11px 14px",border:"1.5px solid #E2E8F0",borderRadius:10,fontSize:14,outline:"none",boxSizing:"border-box"};
+
+  async function handleSignup(){
+    if(!email||!pw||!bizType||!bizName){setErr("Please fill all required fields.");return;}
+    if(pw.length<4){setErr("Password must be at least 4 characters.");return;}
+    setBusy(true); setErr("");
+    try{
+      // 1. Create Supabase auth user
+      var authRes = await sb.auth.signUp({email:email, password:pw});
+      const {
+  data: { session }
+} = await sb.auth.getSession();
+
+console.log("Session:", session);
+
+const {
+  data: { user }
+} = await sb.auth.getUser();
+
+console.log("Current user:", user);
+      if(authRes.error){ setErr(authRes.error.message); setBusy(false); return; }
+      var userId = authRes.data.user ? authRes.data.user.id : null;
+      if(!userId){ setErr("Signup failed — check Supabase email confirmation is disabled."); setBusy(false); return; }
+      // 2. Build business config
+      var tpl = TEMPLATES[bizType];
+      var newBiz = {
+        type:bizType, name:bizName,slug: user.email.split("@")[0].toLowerCase(), hours:bizHours||tpl.defaultHours, address:bizAddr,
+        color:tpl.color, light:tpl.light, emoji:tpl.emoji,
+        services:JSON.parse(JSON.stringify(tpl.services)),
+        faqs:JSON.parse(JSON.stringify(tpl.faqs)),
+        greeting:tpl.greeting.replace("{name}",bizName),
+        ownerPhone:"", twilioPhone:"", plan:"starter"
+      };
+      // 3. Save business to Supabase
+      await dbSaveBusiness(
+        userId,
+        authRes.data.user.email,
+        newBiz
+        );
+      // 4. Create seed appointments in Supabase
+      // 4. Create seed appointments in Supabase
+var seed = [
+  {id:uid(), name:"Ahmed Khan", service:tpl.services[0]?tpl.services[0].name:"", date:"Today",    time:"10:00 AM", status:"confirmed", phone:""},
+  {id:uid(), name:"Sara Ali",   service:tpl.services[1]?tpl.services[1].name:tpl.services[0].name, date:"Today", time:"12:30 PM", status:"confirmed", phone:""},
+  {id:uid(), name:"Bilal Hassan",service:tpl.services[0]?tpl.services[0].name:"", date:"Tomorrow", time:"11:00 AM", status:"pending", phone:""}
+];
+
+for(var i=0;i<seed.length;i++){
+  await dbAddAppt(userId, seed[i]);
+}
+
+// Sign out immediately after signup
+await sb.auth.signOut();
+
+alert(
+  "Your account has been created successfully.It is now waiting for admin approval. You will be able to log in after approval."
+);
+
+setBusy(false);
+onBack();
+return;
+    }catch(ex){
+      setErr("Error: "+ex.message);
+    }
+    setBusy(false);
+  }
+
+  async function handleLogin(){
+    if(!email||!pw){setErr("Please fill all fields.");return;}
+    setBusy(true); setErr("");
+    try{
+      var authRes = await sb.auth.signInWithPassword({email:email, password:pw});
+      if(authRes.error){ setErr(authRes.error.message); setBusy(false); return; }
+      var userId = authRes.data.user.id;
+
+// Load business
+var loadedBiz = await dbLoadBusiness(userId);
+
+if(!loadedBiz){
+  setErr("No business found. Please sign up first.");
+  await sb.auth.signOut();
+  setBusy(false);
+  return;
+}
+
+// 🔒 Approval check
+if(loadedBiz.approval_status === "pending"){
+  setErr("Your account is awaiting admin approval.");
+  await sb.auth.signOut();
+  setBusy(false);
+  return;
+}
+
+if(loadedBiz.approval_status === "rejected"){
+  setErr("Your account has been rejected. Please contact support.");
+  await sb.auth.signOut();
+  setBusy(false);
+  return;
+}
+
+// Approved → continue normally
+var loadedAppts = await dbLoadAppts(userId);
+
+onDone({
+  user: authRes.data.user,
+  userId: userId,
+  biz: loadedBiz,
+  appts: loadedAppts
+});
+    }catch(ex){
+      setErr("Error: "+ex.message);
+    }
+    setBusy(false);
+  }
+
+  var card=[];
+  card.push(e("button",{key:"back",onClick:onBack,style:{background:"none",border:"none",cursor:"pointer",color:"#aaa",fontSize:13,marginBottom:20,padding:0}},"← Back to home"));
+  card.push(e("div",{key:"head",style:{textAlign:"center",marginBottom:24}},
+    e("div",{style:{fontSize:38,marginBottom:5}},"🤖"),
+    e("h2",{style:{margin:0,fontSize:20,fontWeight:900,color:"#111"}},mode==="login"?"Welcome Back":"Create Account"),
+    e("p",{style:{margin:"5px 0 0",color:"#999",fontSize:13}},mode==="login"?"Log in to your dashboard":"Setup in 60 seconds")));
+  if(err) card.push(e("div",{key:"err",style:{background:"#FEF2F2",border:"1px solid #FCA5A5",borderRadius:9,padding:"10px 13px",fontSize:13,color:"#B91C1C",marginBottom:12}},err));
+
+  var btnStyle={padding:"12px",border:"none",borderRadius:10,background:busy?"#CBD5E0":G,color:"#060B15",cursor:busy?"default":"pointer",fontSize:14,fontWeight:800,opacity:busy?0.7:1};
+
+  if(mode==="login"){
+    card.push(e("div",{key:"lf",style:{display:"flex",flexDirection:"column",gap:11}},
+      e("input",{value:email,onChange:function(ev){setEmail(ev.target.value);},placeholder:"Email address",type:"email",style:F}),
+      e("input",{value:pw,onChange:function(ev){setPw(ev.target.value);},placeholder:"Password",type:"password",style:F,onKeyDown:function(ev){if(ev.key==="Enter")handleLogin();}}),
+      e("button",{onClick:handleLogin,disabled:busy,style:btnStyle},busy?"Logging in…":"Log In →"),
+      e("div",{style:{textAlign:"center",fontSize:13,color:"#888"}},"No account? ",e("button",{onClick:onSwitch,style:{background:"none",border:"none",color:"#00B87A",cursor:"pointer",fontWeight:700,fontSize:13}},"Sign up free"))));
+  } else if(mode==="signup"&&step===1){
+    card.push(e("div",{key:"s1",style:{display:"flex",flexDirection:"column",gap:11}},
+      e("div",{style:{fontSize:11,fontWeight:700,color:"#bbb",textTransform:"uppercase",letterSpacing:"1px"}},"Step 1 of 3 · Your account"),
+      e("input",{value:ownerName,onChange:function(ev){setOwnerName(ev.target.value);},placeholder:"Your name",style:F}),
+      e("input",{value:email,onChange:function(ev){setEmail(ev.target.value);},placeholder:"Email address *",type:"email",style:F}),
+      e("input",{value:pw,onChange:function(ev){setPw(ev.target.value);},placeholder:"Password *",type:"password",style:F}),
+      e("button",{onClick:function(){if(!email||!pw){setErr("Email and password are required.");return;}setErr("");setStep(2);},style:btnStyle},"Next →"),
+      e("div",{style:{textAlign:"center",fontSize:13,color:"#888"}},"Have account? ",e("button",{onClick:onSwitch,style:{background:"none",border:"none",color:"#00B87A",cursor:"pointer",fontWeight:700,fontSize:13}},"Log in"))));
+  } else if(mode==="signup"&&step===2){
+    card.push(e("div",{key:"s2"},
+      e("div",{style:{fontSize:11,fontWeight:700,color:"#bbb",textTransform:"uppercase",letterSpacing:"1px",marginBottom:13}},"Step 2 of 3 · Business type"),
+      e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9}},
+        Object.keys(TEMPLATES).map(function(key){
+          var t=TEMPLATES[key];
+          return e("button",{key:t.type,onClick:function(){setBizType(t.type);setBizName(t.defaultName);setBizHours(t.defaultHours);setStep(3);},
+            style:{padding:"14px 10px",border:"2px solid #E8E8E8",borderRadius:12,background:"#FAFAFA",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:6}},
+            e("span",{style:{fontSize:24}},t.emoji),e("span",{style:{fontSize:11,fontWeight:700,color:"#333"}},t.label));})),
+      e("button",{onClick:function(){setStep(1);},style:{width:"100%",marginTop:11,padding:"10px",border:"1.5px solid #E2E8F0",borderRadius:10,background:"transparent",cursor:"pointer",color:"#666",fontSize:13}},"← Back")));
+  } else if(mode==="signup"&&step===3){
+    var fields=[{l:"Business Name *",v:bizName,s:setBizName,p:"Your business name"},{l:"Working Hours",v:bizHours,s:setBizHours,p:bizType?TEMPLATES[bizType].defaultHours:""},{l:"Address (optional)",v:bizAddr,s:setBizAddr,p:"Shop/clinic address"}];
+    card.push(e("div",{key:"s3",style:{display:"flex",flexDirection:"column",gap:11}},
+      e("div",{style:{fontSize:11,fontWeight:700,color:"#bbb",textTransform:"uppercase",letterSpacing:"1px"}},"Step 3 of 3 · Business details"),
+      fields.map(function(f,idx){return e("div",{key:idx},e("label",{style:{fontSize:11,fontWeight:700,color:"#555",display:"block",marginBottom:4}},f.l),e("input",{value:f.v,onChange:function(ev){f.s(ev.target.value);},placeholder:f.p,style:F}));}),
+      e("div",{style:{display:"flex",gap:9,marginTop:4}},
+        e("button",{onClick:function(){setStep(2);},style:{flex:1,padding:"11px",border:"1.5px solid #E2E8F0",borderRadius:10,background:"transparent",cursor:"pointer",fontSize:13,color:"#666"}},"← Back"),
+        e("button",{onClick:handleSignup,disabled:!bizName||busy,style:{flex:2,padding:"11px",border:"none",borderRadius:10,background:bizName&&!busy?G:"#CBD5E0",color:"#060B15",cursor:bizName&&!busy?"pointer":"default",fontSize:13,fontWeight:900}},busy?"Creating…":"🚀 Launch AI Receptionist"))));
+  }
+  return e("div",{style:{minHeight:"100vh",background:"linear-gradient(135deg,#0f2027,#203a43,#2c5364)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}},
+    e("div",{style:{width:"100%",maxWidth:450,background:"#fff",borderRadius:22,padding:30,boxShadow:"0 24px 80px rgba(0,0,0,0.35)"}},card));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CUSTOMER CHAT  (unchanged logic, receives live appts array)
+// ═══════════════════════════════════════════════════════════════
+function CustomerChat(props){
+  var biz=props.biz,appts=props.appts,onBook=props.onBook,onCancel=props.onCancel;
+  var injectedMsg=props.injectedMsg,showBack=props.showBack,onBack=props.onBack;
+  var s1=useState([]),msgs=s1[0],setMsgs=s1[1];
+  var s2=useState(""),txt=s2[0],setTxt=s2[1];
+  var s3=useState(false),loading=s3[0],setLoading=s3[1];
+  var s4=useState(false),voiceCalling=s4[0],setVoiceCalling=s4[1];
+  var endRef=useRef(null);
+  var color=biz.color;
+  useEffect(function(){setMsgs([{role:"assistant",content:biz.greeting,ts:nowTs()}]);},[]); 
+  useEffect(function(){if(endRef.current)endRef.current.scrollIntoView({behavior:"smooth"});},[msgs,loading]);
+  useEffect(function(){if(injectedMsg)setMsgs(function(p){return p.concat([{role:"owner",content:injectedMsg,ts:nowTs()}]);});},[injectedMsg]);
+  async function send(t){
+    var msg=(t||txt).trim(); if(!msg||loading)return;
+    var next=msgs.concat([{role:"user",content:msg,ts:nowTs()}]);
+    setMsgs(next); setTxt(""); setLoading(true);
+    try{
+      var apiMsgs=next.filter(function(m){return m.role!=="owner";}).map(function(m){return{role:m.role==="assistant"?"assistant":"user",content:m.content};});
+      var parsed = await callClaude(buildAIPrompt(biz, appts, false), apiMsgs);
+
+      setMsgs(function(p){
+        return p.concat([{
+        role:"assistant",
+        content:parsed.message || "Sorry, please try again!",
+        ts:nowTs()
+        }]);
+      });
+
+      console.log("Claude:", parsed);
+      
+      console.log("TYPE:", typeof parsed);
+      console.log("PARSED:", parsed);
+      console.log("MESSAGE:", parsed.message);
+      console.log("ACTION:", parsed.action);
+      console.log("APPOINTMENT:", parsed.appointment);
+
+    if(parsed.action==="book" && parsed.appointment){
+
+      var k = slotKey(parsed.appointment.date, parsed.appointment.time);
+
+    if(!appts.find(function(a){
+      return slotKey(a.date,a.time)===k;
+      })){
+
+    onBook(
+      Object.assign(
+        {
+          id:uid(),
+          status:"confirmed",
+          phone: parsed.appointment.phone || ''
+        },
+        parsed.appointment
+      )
+    );
+
+  }
+
+}else if(parsed.action==="cancel" && parsed.appointment){
+
+  onCancel(parsed.appointment.name);
+
+}
+
+    }catch(err){setMsgs(function(p){return p.concat([{role:"assistant",content:"Network issue — please try again 🙏",ts:nowTs()}]);});}
+    setLoading(false);
+  }
+  var qrMap={salon:["Book 💇","Prices 💅","Hours 🕐","Reschedule"],clinic:["Book 🩺","Services & fees","What to bring?","Cancel"],restaurant:["Reserve table 🍽️","Party booking 🎂","Veg options?","Cancel"],gym:["Free trial 🎯","Classes 💪","Membership?","Reschedule"],dental:["Book 🦷","Costs?","Will it hurt?","Cancel"]};
+  var qr=qrMap[biz.type]||["Book","Services","Hours","Cancel"];
+  var hdr=[
+    biz.logoUrl
+      ? e("img",{key:"av",src:biz.logoUrl,alt:"",style:{width:40,height:40,borderRadius:"50%",objectFit:"cover",border:"2px solid rgba(255,255,255,0.3)",flexShrink:0}})
+      : e("div",{key:"av",style:{width:40,height:40,borderRadius:"50%",background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,border:"2px solid rgba(255,255,255,0.3)",flexShrink:0}},biz.emoji),
+    e("div",{key:"info",style:{flex:1}},e("div",{style:{color:"#fff",fontWeight:700,fontSize:14}},biz.name),e("div",{style:{color:"#A8D8A8",fontSize:11}},"🟢 AI Receptionist · Always available"),biz.address?e("div",{style:{color:"rgba(255,255,255,0.55)",fontSize:10}},biz.address):null),
+    //e("button",{key:"call",onClick:function(){console.log(biz);window.open("/voice?slug="+encodeURIComponent(biz.slug||(biz.name||"business").toLowerCase().replace(/\s+/g,"-")),"_blank");},style:{background:"#25D366",border:"none",color:"#fff",borderRadius:8,padding:"5px 11px",cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}},"📞 Call")
+    e("button",{key:"call",onClick:function(){console.log("slug =",biz.slug);console.log("biz =",biz);window.open("/voice?slug="+encodeURIComponent(biz.slug||(biz.name||"business").toLowerCase().replace(/\s+/g,"-")),"_blank");},style:{background:"#25D366",border:"none",color:"#fff",borderRadius:8,padding:"5px 11px",cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}},"📞 Call")
+  ];
+  if(showBack) hdr.push(e("button",{key:"back",onClick:onBack,style:{background:"rgba(255,255,255,0.15)",border:"none",color:"#fff",borderRadius:8,padding:"5px 11px",cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}},"← Dashboard"));
+  var bubbles=msgs.map(function(m,i){
+    var ch=[];
+    if(m.role==="assistant"||m.role==="owner") ch.push(e("div",{key:"a",style:{width:27,height:27,borderRadius:"50%",background:m.role==="owner"?"#1565C0":color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0,marginBottom:2}},m.role==="owner"?"👨‍💼":biz.emoji));
+    var bi=[];
+    if(m.role==="owner") bi.push(e("div",{key:"lbl",style:{fontSize:10,fontWeight:700,color:"#1565C0",marginBottom:3}},"From Team"));
+    bi.push(e("div",{key:"txt",dangerouslySetInnerHTML:{__html:fmtWA(m.content)}}));
+    bi.push(e("div",{key:"ts",style:{position:"absolute",bottom:4,right:8,fontSize:10,color:"#bbb",display:"flex",alignItems:"center",gap:3}},m.ts,m.role==="user"?e("span",{key:"ck",style:{color:"#4FC3F7"}},"✓✓"):null));
+    ch.push(e("div",{key:"b",style:{maxWidth:"72%",background:m.role==="user"?"#DCF8C6":m.role==="owner"?"#E3F2FD":"#fff",borderRadius:m.role==="user"?"12px 12px 3px 12px":"12px 12px 12px 3px",padding:"9px 12px 20px",boxShadow:"0 1px 3px rgba(0,0,0,0.1)",position:"relative",fontSize:14,lineHeight:1.6,color:"#111"}},bi));
+    return e("div",{key:i,style:{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",alignItems:"flex-end",gap:6}},ch);
+  });
+  var area=[e("div",{key:"t",style:{textAlign:"center",marginBottom:5}},e("span",{style:{background:"rgba(0,0,0,0.09)",color:"#555",fontSize:11,padding:"3px 11px",borderRadius:8}},"Today"))].concat(bubbles);
+  if(loading) area.push(e("div",{key:"ty",style:{display:"flex",alignItems:"flex-end",gap:6}},e("div",{style:{width:27,height:27,borderRadius:"50%",background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13}},biz.emoji),e("div",{style:{background:"#fff",borderRadius:"12px 12px 12px 3px",padding:"11px 14px",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}},e("div",{style:{display:"flex",gap:4}},[0,1,2].map(function(i){return e("div",{key:i,style:{width:8,height:8,borderRadius:"50%",background:color,animation:"typing 1.3s infinite",animationDelay:(i*0.22)+"s"}});})))));
+  area.push(e("div",{key:"end",ref:endRef}));
+  return e("div",{style:{height:"100vh",display:"flex",flexDirection:"column"}},
+    e("div",{style:{background:"#128C7E",padding:"10px 14px",display:"flex",alignItems:"center",gap:11,flexShrink:0}},hdr),
+    e("div",{style:{flex:1,overflowY:"auto",padding:"12px 10px",background:"#ECE5DD",display:"flex",flexDirection:"column",gap:7}},area),
+    e("div",{style:{padding:"5px 10px 2px",background:"#ECE5DD",display:"flex",gap:6,overflowX:"auto",flexShrink:0}},qr.map(function(q){return e("button",{key:q,onClick:function(){send(q);},style:{padding:"5px 12px",borderRadius:18,border:"1.5px solid "+color,background:"rgba(255,255,255,0.9)",color:color,fontSize:12,cursor:"pointer",whiteSpace:"nowrap",fontWeight:600,flexShrink:0}},q);})),
+    e("div",{style:{padding:"8px 10px",background:"#F0F2F5",display:"flex",gap:8,alignItems:"center",flexShrink:0}},
+      e("div",{style:{flex:1,display:"flex",background:"#fff",borderRadius:22,alignItems:"center",padding:"0 13px",boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}},e("input",{value:txt,onChange:function(ev){setTxt(ev.target.value);},onKeyDown:function(ev){if(ev.key==="Enter")send();},placeholder:"Type a message…",style:{flex:1,border:"none",outline:"none",fontSize:14,padding:"10px 0",background:"transparent"}})),
+      e("button",{onClick:function(){send();},disabled:loading||!txt.trim(),style:{width:44,height:44,borderRadius:"50%",border:"none",background:(!loading&&txt.trim())?"#25D366":"#CBD5E0",color:"#fff",cursor:(!loading&&txt.trim())?"pointer":"default",fontSize:19,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,boxShadow:"0 2px 6px rgba(0,0,0,0.15)"}},"➤")));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  UPGRADE MODAL  (unchanged)
+// ═══════════════════════════════════════════════════════════════
+function UpgradeModal(props){
+  var color=props.color,onClose=props.onClose,onConfirm=props.onConfirm;
+  var feats=["AI phone call reception — AI answers calls 24/7","WhatsApp Business API integration","Auto SMS & WhatsApp reminders","Unlimited services & FAQs","Custom branding & domain","Priority WhatsApp support","Advanced booking analytics"];
+  return e("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:998,padding:20}},
+    e("div",{style:{background:"#fff",borderRadius:20,padding:28,maxWidth:420,width:"100%",boxShadow:"0 24px 80px rgba(0,0,0,0.3)"}},
+      e("div",{style:{textAlign:"center",marginBottom:20}},e("div",{style:{fontSize:40,marginBottom:6}},"🚀"),e("h2",{style:{margin:0,fontSize:20,fontWeight:900,color:"#111"}},"Upgrade to Pro"),e("p",{style:{margin:"6px 0 0",color:"#888",fontSize:13}},"Everything you need to run your business on autopilot")),
+      e("div",{style:{background:"linear-gradient(135deg,#7C3AED,#00E5A0)",borderRadius:12,padding:"14px 18px",marginBottom:18,textAlign:"center"}},e("div",{style:{color:"#fff",fontSize:28,fontWeight:900}},"$59",e("span",{style:{fontSize:13,fontWeight:400,opacity:0.8}},"/month · local currency at checkout")),e("div",{style:{color:"rgba(255,255,255,0.85)",fontSize:12,marginTop:3}},"Cancel anytime · No setup fees")),
+      e("div",{style:{marginBottom:20}},feats.map(function(f){return e("div",{key:f,style:{display:"flex",gap:9,alignItems:"flex-start",marginBottom:9}},e("div",{style:{width:20,height:20,borderRadius:"50%",background:"#E8F5E9",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,flexShrink:0,marginTop:1}},"✓"),e("div",{style:{fontSize:13,color:"#333",lineHeight:1.4}},f));})),
+      e("button",{onClick:onConfirm,style:{width:"100%",padding:"13px",border:"none",borderRadius:11,background:"linear-gradient(135deg,#7C3AED,#00E5A0)",color:"#fff",cursor:"pointer",fontSize:14,fontWeight:800,marginBottom:10}},"💳 Subscribe on Pricing Page"),
+      e("div",{style:{textAlign:"center",fontSize:12,color:"#aaa",marginBottom:12}},"Secure checkout via Paddle · Cancel anytime",e("br"),"Opens the BookAI pricing page"),
+      e("button",{onClick:onClose,style:{width:"100%",padding:"10px",border:"1.5px solid #E2E8F0",borderRadius:10,background:"transparent",color:"#888",cursor:"pointer",fontSize:13}},"Maybe later")));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DASHBOARD — now receives userId + onDeleteAppt + saveBiz is pre-wrapped
+// ═══════════════════════════════════════════════════════════════
+
+function ConversationsPanel(props){
+  var userId=props.userId, color=props.color;
+  var s1=useState([]), list=s1[0], setList=s1[1];
+  var s2=useState(null), active=s2[0], setActive=s2[1];
+  var s3=useState([]), msgs=s3[0], setMsgs=s3[1];
+  var s4=useState(""), q=s4[0], setQ=s4[1];
+  var s5=useState(""), reply=s5[0], setReply=s5[1];
+  var s6=useState(true), loading=s6[0], setLoading=s6[1];
+  useEffect(function(){
+    if(!userId) return;
+    (async function(){
+      var res=await sb.from("conversations").select("*").eq("user_id",userId).order("updated_at",{ascending:false}).limit(50);
+      setList(res.data||[]);
+      setLoading(false);
+    })();
+  },[userId]);
+  async function openConv(c){
+    setActive(c);
+    var res=await sb.from("conversation_messages").select("*").eq("conversation_id",c.id).order("created_at",{ascending:true});
+    setMsgs(res.data||[]);
+  }
+  async function sendReply(){
+    if(!reply.trim()||!active) return;
+    var text=reply.trim(); setReply("");
+    await sb.from("conversation_messages").insert({conversation_id:active.id, role:"owner", content:text});
+    setMsgs(function(p){return p.concat([{role:"owner",content:text,created_at:new Date().toISOString()}]);});
+  }
+  var filtered=list.filter(function(c){
+    if(!q.trim()) return true;
+    var hay=((c.customer_phone||"")+" "+(c.customer_name||"")+" "+(c.channel||"")).toLowerCase();
+    return hay.indexOf(q.toLowerCase())!==-1;
+  });
+  if(loading) return e("div",{style:{padding:20,color:"#888",fontSize:13}},"Loading conversations…");
+  return e("div",{style:{display:"grid",gridTemplateColumns:active?"1fr 1.2fr":"1fr",gap:10}},
+    e("div",null,
+      e("input",{value:q,onChange:function(ev){setQ(ev.target.value);},placeholder:"Search phone / name / channel…",style:{width:"100%",padding:"9px 12px",border:"1.5px solid #E2E8F0",borderRadius:9,fontSize:13,marginBottom:10,boxSizing:"border-box"}}),
+      filtered.length===0?e("div",{style:{padding:24,textAlign:"center",color:"#aaa",fontSize:13}},"No conversations yet. WhatsApp messages appear here."):
+      filtered.map(function(c){
+        return e("div",{key:c.id,onClick:function(){openConv(c);},style:{background:active&&active.id===c.id?"#F0F4FF":"#fff",borderRadius:10,padding:"10px 12px",marginBottom:6,boxShadow:"0 1px 3px rgba(0,0,0,0.06)",cursor:"pointer"}},
+          e("div",{style:{fontWeight:700,fontSize:13}},(c.channel||"chat")+" · "+(c.customer_phone||c.customer_name||"Customer")),
+          e("div",{style:{fontSize:11,color:"#999"}},c.updated_at?new Date(c.updated_at).toLocaleString():""));
+      })
+    ),
+    active?e("div",{style:{background:"#fff",borderRadius:11,padding:12,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",display:"flex",flexDirection:"column",minHeight:320}},
+      e("div",{style:{fontWeight:700,fontSize:13,marginBottom:8,borderBottom:"1px solid #F0F0F0",paddingBottom:8}},"Conversation"),
+      e("div",{style:{flex:1,overflowY:"auto",maxHeight:280,marginBottom:10}},
+        msgs.map(function(m,i){
+          var mine=m.role==="owner"||m.role==="assistant";
+          return e("div",{key:i,style:{display:"flex",justifyContent:m.role==="user"?"flex-start":"flex-end",marginBottom:6}},
+            e("div",{style:{maxWidth:"85%",background:m.role==="user"?"#F3F4F6":(m.role==="owner"?"#DBEAFE":"#ECFDF5"),borderRadius:10,padding:"8px 10px",fontSize:12,lineHeight:1.5}},
+              e("div",{style:{fontSize:9,fontWeight:800,color:"#999",marginBottom:2}},m.role),
+              m.content));
+        })
+      ),
+      e("div",{style:{display:"flex",gap:6}},
+        e("input",{value:reply,onChange:function(ev){setReply(ev.target.value);},onKeyDown:function(ev){if(ev.key==="Enter")sendReply();},placeholder:"Reply as owner (take over)…",style:{flex:1,padding:"9px 12px",border:"1.5px solid #E2E8F0",borderRadius:9,fontSize:13}}),
+        e("button",{onClick:sendReply,style:{padding:"9px 14px",border:"none",borderRadius:9,background:color,color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer"}},"Send")
+      )
+    ):null
+  );
+}
+
+function Dashboard(props){
+  var user=props.user,userId=props.userId,biz=props.biz,setBiz=props.setBiz;
+  var appts=props.appts,setAppts=props.setAppts,onDeleteAppt=props.onDeleteAppt;
+  var onLogout=props.onLogout,onPreviewChat=props.onPreviewChat,setInjectedMsg=props.setInjectedMsg;
+  var s1=useState("overview"),tab=s1[0],setTab=s1[1];
+  var s2=useState(""),ownerMsg=s2[0],setOwnerMsg=s2[1];
+  var s3=useState(null),reminder=s3[0],setReminder=s3[1];
+  var s4=useState({name:"",duration:"",price:"",emoji:"⭐"}),ns=s4[0],setNs=s4[1];
+  var s5=useState({q:"",a:""}),nf=s5[0],setNf=s5[1];
+  var s6=useState(false),showUpgrade=s6[0],setShowUpgrade=s6[1];
+  var s7=useState(false),isPro=s7[0],setIsPro=s7[1];
+  var s8=useState(false),showCallSim=s8[0],setShowCallSim=s8[1];
+  var s9=useState("all"),apptFilter=s9[0],setApptFilter=s9[1];
+  // Resolve Pro from Paddle subscription (or admin email bypass). Never unlock free via modal.
+  useEffect(function(){
+    (async function(){
+      try{
+        // Refresh admin list from server env
+        try{
+          var cfgRes = await fetch("/api/config");
+          var cfg = await cfgRes.json();
+          if(cfg && cfg.adminEmails){
+            ADMIN_EMAILS = String(cfg.adminEmails).split(",").map(function(s){return s.trim().toLowerCase();}).filter(Boolean);
+          }
+        }catch(_e){}
+        var email = (props.user && props.user.email) ? String(props.user.email).toLowerCase() : "";
+        if(email && ADMIN_EMAILS.indexOf(email) !== -1){ setIsPro(true); return; }
+        var sess = await sb.auth.getSession();
+        var token = sess.data && sess.data.session && sess.data.session.access_token;
+        if(!token){ setIsPro(false); return; }
+        var res = await fetch("/api/paddle/subscription", { headers: { Authorization: "Bearer " + token } });
+        var json = await res.json();
+        var st = json.subscription && json.subscription.status;
+        if(st === "active" || st === "trialing") setIsPro(true);
+        else setIsPro(false);
+      }catch(err){ console.error("subscription check failed", err); }
+    })();
+  }, [props.user && props.user.email]);
+  var color=biz.color,light=biz.light;
+  
+  function apptDayKey(a){
+    var d=String(a.date||"");
+    var todayISO=new Date().toISOString().slice(0,10);
+    var tomISO=new Date(Date.now()+86400000).toISOString().slice(0,10);
+    if(d===todayISO||d==="Today") return "today";
+    if(d===tomISO||d==="Tomorrow") return "tomorrow";
+    if(a.status==="cancelled"||a.status==="canceled") return "cancelled";
+    if(a.status==="completed") return "completed";
+    // past dates -> completed
+    if(/^\d{4}-\d{2}-\d{2}$/.test(d) && d < todayISO) return "completed";
+    return "upcoming";
+  }
+  var today=appts.filter(function(a){return apptDayKey(a)==="today" && a.status!=="cancelled" && a.status!=="canceled";});
+  var tomorrow=appts.filter(function(a){return apptDayKey(a)==="tomorrow";});
+  var upcoming=appts.filter(function(a){return apptDayKey(a)==="upcoming";});
+  var completed=appts.filter(function(a){return apptDayKey(a)==="completed";});
+  var cancelled=appts.filter(function(a){return apptDayKey(a)==="cancelled";});
+  var F={width:"100%",padding:"9px 12px",border:"1.5px solid #E2E8F0",borderRadius:9,fontSize:13,outline:"none",boxSizing:"border-box"};
+
+  // setBiz is already wrapped in App to auto-save to Supabase
+  function addSvc(){
+    var name=(ns.name||"").trim();
+    var price=(ns.price||"").trim();
+    if(!name){ alert("Enter a service name"); return; }
+    if(!price){ alert("Enter a price (e.g. Rs. 500)"); return; }
+    var list = Array.isArray(biz.services) ? biz.services.slice() : [];
+    list.push({
+      id: uid(),
+      name: name,
+      duration: (ns.duration||"").trim() || "30 min",
+      price: price,
+      emoji: (ns.emoji||"⭐").trim() || "⭐"
+    });
+    setBiz(Object.assign({}, biz, { services: list }));
+    setNs({name:"",duration:"",price:"",emoji:"⭐"});
+  }
+  function delSvc(id){
+    var list = Array.isArray(biz.services) ? biz.services.filter(function(s){return s.id!==id;}) : [];
+    setBiz(Object.assign({}, biz, { services: list }));
+  }
+  function addFaq(){
+    var q=(nf.q||"").trim();
+    var a=(nf.a||"").trim();
+    if(!q){ alert("Enter a question"); return; }
+    if(!a){ alert("Enter an answer"); return; }
+    var list = Array.isArray(biz.faqs) ? biz.faqs.slice() : [];
+    list.push({ q: q, a: a });
+    setBiz(Object.assign({}, biz, { faqs: list }));
+    setNf({q:"",a:""});
+  }
+  function delFaq(i){
+    var list = Array.isArray(biz.faqs) ? biz.faqs.filter(function(_,j){return j!==i;}) : [];
+    setBiz(Object.assign({}, biz, { faqs: list }));
+  }
+  function sendOwnerMsg(){ if(!ownerMsg.trim())return; setInjectedMsg(ownerMsg.trim()); setOwnerMsg(""); onPreviewChat(); }
+
+  // Call simulator book/cancel — also sync to Supabase
+  function onCallBook(appt){
+    var k=slotKey(appt.date,appt.time);
+    if(appts.find(function(x){return slotKey(x.date,x.time)===k;}))return;
+    setAppts(appts.concat([appt]));
+    if(userId) dbAddAppt(userId,appt).catch(console.error);
+  }
+  function onCallCancel(name){
+    setAppts(appts.filter(function(a){return a.name.toLowerCase()!==name.toLowerCase();}));
+    if(userId) dbDeleteApptByName(userId,name).catch(console.error);
+  }
+
+  var TABS=[{id:"overview",l:"📊 Overview"},{id:"appointments",l:"📅 Bookings"},{id:"livechat",l:"💬 Live Chat"},{id:"services",l:"✨ Services"},{id:"faq",l:"❓ FAQ"},{id:"settings",l:"⚙️ Settings"}];
+
+  function ARow(a){
+  var svc=biz.services.find(function(s){return s.name===a.service;});
+  return e("div",{key:a.id,style:{background:"#fff",borderRadius:12,padding:"12px 13px",marginBottom:8,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}},
+    e("div",{style:{display:"flex",gap:11,alignItems:"center",minWidth:0}},
+      e("div",{style:{width:42,height:42,borderRadius:"50%",background:light,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}},svc?svc.emoji:"👤"),
+      e("div",{style:{minWidth:0}},
+        e("div",{style:{fontWeight:700,fontSize:13,color:"#111"}},a.name),
+        e("div",{style:{fontSize:12,color:"#777"}},a.service+" · "+(a.date||"")+" · "+a.time),
+        e("div",{style:{fontSize:12,marginTop:3}},
+          a.phone&&a.phone!=="Phone unavailable"
+            ? e("a",{href:"tel:"+a.phone,style:{color:"#25D366",textDecoration:"none",fontWeight:700}},"📞 "+a.phone)
+            : e("span",{style:{color:"#999"}},"📞 Phone unavailable")
+        )
+      )
+    ),
+    e("div",{style:{display:"flex",gap:6,alignItems:"center",flexShrink:0}},
+      e("button",{onClick:function(){setReminder(a.id);setTimeout(function(){setReminder(null);},2500);},style:{padding:"4px 9px",borderRadius:16,border:"1.5px solid #25D366",background:reminder===a.id?"#25D366":"transparent",color:reminder===a.id?"#fff":"#25D366",fontSize:11,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap"}},reminder===a.id?"✅ Sent!":"⏰ Remind"),
+      e("span",{style:{fontSize:11,padding:"4px 9px",borderRadius:16,background:a.status==="confirmed"?"#E8F5E9":"#FFF8E1",color:a.status==="confirmed"?"#2E7D32":"#E65100",fontWeight:700,whiteSpace:"nowrap"}},a.status==="confirmed"?"✅ Confirmed":"⏳ Pending"),
+      e("button",{onClick:function(){onDeleteAppt(a.id);},style:{background:"none",border:"none",cursor:"pointer",fontSize:17,color:"#ddd",padding:0,lineHeight:1,flexShrink:0}},"✕")
+    )
+  );
+}
+  var customerLink = window.location.origin + "/chat/" + (biz.slug || (user.email ? user.email.split("@")[0] : "business"));
+  var content;
+  if(tab==="overview"){
+    var oc=[
+      e("div",{key:"bn",style:{background:"linear-gradient(135deg,"+color+","+color+"BB)",borderRadius:14,padding:"16px 18px",marginBottom:13,color:"#fff",display:"flex",alignItems:"center",gap:13}},
+        e("div",{style:{fontSize:36}},biz.emoji),
+        e("div",{style:{flex:1}},e("div",{style:{fontSize:16,fontWeight:800}},biz.name),e("div",{style:{fontSize:12,opacity:0.8}},"⏰ "+biz.hours),biz.address?e("div",{style:{fontSize:11,opacity:0.65}},"📍 "+biz.address):null),
+        e("div",{style:{background:"rgba(255,255,255,0.18)",borderRadius:11,padding:"9px 15px",textAlign:"center"}},e("div",{style:{fontSize:24,fontWeight:900}},today.length),e("div",{style:{fontSize:10,opacity:0.8}},"Today"))),
+      e("div",{key:"st",style:{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:9,marginBottom:13}},
+        [{l:"Total Bookings",v:appts.length,i:"📅",c:color},{l:"Today",v:today.length,i:"🔴",c:"#E53935"},{l:"Upcoming",v:upcoming.length,i:"🟢",c:"#00B87A"},{l:"Completed",v:completed.length,i:"✅",c:"#0277BD"}].map(function(s){
+          return e("div",{key:s.l,style:{background:"#fff",borderRadius:11,padding:"12px 8px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",borderTop:"3px solid "+s.c,textAlign:"center"}},e("div",{style:{fontSize:19}},s.i),e("div",{style:{fontSize:20,fontWeight:900,color:"#111"}},s.v),e("div",{style:{fontSize:10,color:"#999",marginTop:2}},s.l));})),
+      e("div",{key:"lk",style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:13}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:7}},"📲 Your Customer Chat Link"),
+        isPro
+          ? e("div",null,
+              e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",marginBottom:7,wordBreak:"break-all"}},customerLink),
+              e("div",{style:{fontSize:12,color:"#888",lineHeight:1.65}},"Share on WhatsApp, Facebook, Instagram. ",e("strong",null,"Customers see only the chat — never your dashboard.")))
+          : e("div",null,
+              e("div",{style:{background:"#FFFBEB",border:"1px solid #FCD34D",borderRadius:8,padding:"10px 12px",fontSize:12,color:"#78350F",lineHeight:1.6,marginBottom:8}},"🔒 Customer chat link unlocks after you subscribe. Set up your business, then subscribe to go live."),
+              e("button",{onClick:function(){window.location.href="/pricing";},style:{padding:"8px 16px",border:"none",borderRadius:8,background:"#7C3AED",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700}},"Subscribe to unlock →")))
+    ];
+    if(today.length>0) oc.push(e("div",{key:"tl"},e("div",{style:{fontSize:11,fontWeight:800,color:"#aaa",textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:7}},"🔴 Today"),today.map(ARow)));
+    if(isPro){
+      oc.push(e("div",{key:"cb",onClick:function(){setShowCallSim(true);},style:{background:"linear-gradient(135deg,#0277BD,#00BCD4)",borderRadius:12,padding:"14px 16px",cursor:"pointer",color:"#fff",display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:10}},e("div",null,e("div",{style:{fontWeight:700,fontSize:13,marginBottom:2}},"📞 Try AI Call Simulator"),e("div",{style:{fontSize:11,opacity:0.85}},"See how AI answers and handles phone calls")),e("div",{style:{fontSize:18,opacity:0.8}},"→")));
+    } else {
+      oc.push(e("div",{key:"ub",onClick:function(){setShowUpgrade(true);},style:{background:"linear-gradient(135deg,#7C3AED,#4A00E0)",borderRadius:12,padding:"14px 16px",cursor:"pointer",color:"#fff",display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:10}},e("div",null,e("div",{style:{fontWeight:700,fontSize:13,marginBottom:2}},"🚀 Unlock Pro Features"),e("div",{style:{fontSize:11,opacity:0.8}},"AI phone calls · WhatsApp API · Auto reminders")),e("div",{style:{fontSize:18,opacity:0.8}},"→")));
+    }
+    content=e("div",null,oc);
+  } else if(tab==="appointments"){
+    if(!isPro){
+      content=e("div",{style:{background:"#fff",borderRadius:12,padding:28,textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}},
+        e("div",{style:{fontSize:40,marginBottom:10}},"🔒"),
+        e("div",{style:{fontWeight:800,fontSize:15,marginBottom:8}},"Bookings unlock after subscribe"),
+        e("div",{style:{fontSize:13,color:"#666",lineHeight:1.6,marginBottom:14}},"Free accounts can set up the business. Subscribe to receive and manage live bookings."),
+        e("button",{onClick:function(){window.location.href="/pricing";},style:{padding:"10px 20px",border:"none",borderRadius:9,background:"#7C3AED",color:"#fff",cursor:"pointer",fontWeight:700,fontSize:13}},"View pricing →"));
+    } else {
+    var filterList=[{id:"all",l:"All"},{id:"today",l:"Today"},{id:"upcoming",l:"Upcoming"},{id:"completed",l:"Completed"},{id:"cancelled",l:"Cancelled"}];
+    var filtered=appts.filter(function(a){
+      var k=apptDayKey(a);
+      if(apptFilter==="all") return true;
+      if(apptFilter==="today") return k==="today";
+      if(apptFilter==="upcoming") return k==="upcoming"||k==="tomorrow";
+      if(apptFilter==="completed") return k==="completed";
+      if(apptFilter==="cancelled") return k==="cancelled";
+      return true;
+    });
+    var filterBar=e("div",{style:{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}},filterList.map(function(f){
+      return e("button",{key:f.id,onClick:function(){setApptFilter(f.id);},style:{padding:"6px 12px",borderRadius:16,border:"1.5px solid "+(apptFilter===f.id?color:"#E2E8F0"),background:apptFilter===f.id?color:"#fff",color:apptFilter===f.id?"#fff":"#555",fontSize:11,fontWeight:700,cursor:"pointer"}},f.l);
+    }));
+    var ag=[{label:"Today",dot:"🔴",data:filtered.filter(function(a){return apptDayKey(a)==="today";})},{label:"Upcoming",dot:"🟢",data:filtered.filter(function(a){var k=apptDayKey(a);return k==="upcoming"||k==="tomorrow";})},{label:"Completed",dot:"✅",data:filtered.filter(function(a){return apptDayKey(a)==="completed";})},{label:"Cancelled",dot:"✕",data:filtered.filter(function(a){return apptDayKey(a)==="cancelled";})}];
+    if(apptFilter!=="all"){ ag=[{label:apptFilter,dot:"·",data:filtered}]; }
+    var ac=ag.filter(function(g){return g.data.length>0;}).map(function(g){return e("div",{key:g.label,style:{marginBottom:16}},e("div",{style:{fontSize:11,fontWeight:800,color:"#aaa",textTransform:"uppercase",letterSpacing:"1.2px",marginBottom:7}},g.dot+" "+g.label+" · "+g.data.length),g.data.map(ARow));});
+    if(filtered.length===0) ac.push(e("div",{key:"emp",style:{textAlign:"center",padding:"44px 20px",color:"#ccc"}},e("div",{style:{fontSize:48,marginBottom:9}},"📅"),e("div",{style:{fontSize:13}},"No bookings in this filter.")));
+    content=e("div",null,filterBar,ac);
+    }
+  } else if(tab==="livechat"){
+    if(!isPro){
+      content=e("div",{style:{background:"#fff",borderRadius:12,padding:28,textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}},
+        e("div",{style:{fontSize:40,marginBottom:10}},"🔒"),
+        e("div",{style:{fontWeight:800,fontSize:15,marginBottom:8}},"Conversations unlock after subscribe"),
+        e("button",{onClick:function(){window.location.href="/pricing";},style:{padding:"10px 20px",border:"none",borderRadius:9,background:"#7C3AED",color:"#fff",cursor:"pointer",fontWeight:700,fontSize:13}},"View pricing →"));
+    } else {
+      content=e(ConversationsPanel,{userId:userId,color:color});
+    }
+  } else if(tab==="services"){
+    content=e("div",null,
+      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:9}},"➕ Add New Service"),
+        e("div",{style:{display:"grid",gridTemplateColumns:"1fr 55px",gap:7,marginBottom:7}},e("input",{value:ns.name,onChange:function(ev){setNs(Object.assign({},ns,{name:ev.target.value}));},placeholder:"Service name *",style:F}),e("input",{value:ns.emoji,onChange:function(ev){setNs(Object.assign({},ns,{emoji:ev.target.value}));},placeholder:"⭐",style:F})),
+        e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:9}},e("input",{value:ns.duration,onChange:function(ev){setNs(Object.assign({},ns,{duration:ev.target.value}));},placeholder:"Duration (e.g. 30 min)",style:F}),e("input",{value:ns.price,onChange:function(ev){setNs(Object.assign({},ns,{price:ev.target.value}));},placeholder:"Price (e.g. Rs. 500) *",style:F})),
+        e("button",{onClick:addSvc,disabled:!ns.name||!ns.price,style:{padding:"8px 18px",border:"none",borderRadius:8,background:(ns.name&&ns.price)?color:"#CBD5E0",color:"#fff",cursor:(ns.name&&ns.price)?"pointer":"default",fontSize:13,fontWeight:700}},"Add Service")),
+      e("div",{style:{background:light,borderRadius:9,padding:"9px 13px",fontSize:12,color:color,fontWeight:600,marginBottom:9}},"🤖 AI quotes these in chat automatically. "+biz.services.length+" services active."),
+      biz.services.map(function(s){
+        return e("div",{key:s.id,style:{background:"#fff",borderRadius:11,padding:"12px 13px",marginBottom:7,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",display:"flex",alignItems:"center",justifyContent:"space-between"}},
+          e("div",{style:{display:"flex",alignItems:"center",gap:11}},e("div",{style:{width:40,height:40,borderRadius:9,background:light,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}},s.emoji),e("div",null,e("div",{style:{fontWeight:700,fontSize:13}},s.name),e("div",{style:{fontSize:11,color:"#999"}},"⏱ "+s.duration))),
+          e("div",{style:{display:"flex",alignItems:"center",gap:9}},e("div",{style:{fontWeight:800,color:color,fontSize:13}},s.price),e("button",{onClick:function(){delSvc(s.id);},style:{background:"#FEF2F2",border:"none",borderRadius:7,padding:"4px 9px",color:"#B91C1C",cursor:"pointer",fontSize:11,fontWeight:700}},"✕")));
+      }));
+  } else if(tab==="faq"){
+    content=e("div",null,
+      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:9}},"➕ Add New FAQ"),
+        e("input",{value:nf.q,onChange:function(ev){setNf(Object.assign({},nf,{q:ev.target.value}));},placeholder:"Question *",style:Object.assign({},F,{marginBottom:7})}),
+        e("textarea",{value:nf.a,onChange:function(ev){setNf(Object.assign({},nf,{a:ev.target.value}));},placeholder:"Answer *",style:Object.assign({},F,{minHeight:55,resize:"vertical"})}),
+        e("button",{onClick:addFaq,disabled:!nf.q||!nf.a,style:{marginTop:9,padding:"8px 18px",border:"none",borderRadius:8,background:(nf.q&&nf.a)?color:"#CBD5E0",color:"#fff",cursor:(nf.q&&nf.a)?"pointer":"default",fontSize:13,fontWeight:700}},"Add FAQ")),
+      e("div",{style:{background:"#EFF6FF",borderRadius:9,padding:"9px 13px",fontSize:12,color:"#1D4ED8",fontWeight:600,marginBottom:9}},"🤖 AI answers these instantly. "+biz.faqs.length+" FAQs configured."),
+      (Array.isArray(biz.faqs)?biz.faqs:[]).map(function(f,i){
+        return e("div",{key:i,style:{background:"#fff",borderRadius:11,padding:"13px 14px",marginBottom:7,boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}},
+          e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}},
+            e("div",{style:{flex:1}},e("div",{style:{fontWeight:700,fontSize:12,color:color,marginBottom:4,display:"flex",gap:5}},e("span",null,"❓"),f.q),e("div",{style:{fontSize:12,color:"#555",display:"flex",gap:5}},e("span",null,"💬"),f.a)),
+            e("button",{onClick:function(){delFaq(i);},style:{background:"#FEF2F2",border:"none",borderRadius:7,padding:"4px 9px",color:"#B91C1C",cursor:"pointer",fontSize:11,fontWeight:700,flexShrink:0}},"✕")));
+      }));
+  } else if(tab==="settings"){
+    var planBlock;
+    if(isPro){
+      planBlock=e("div",{style:{background:"linear-gradient(135deg,rgba(124,58,237,0.1),rgba(0,229,160,0.1))",border:"1.5px solid rgba(124,58,237,0.3)",borderRadius:11,padding:14}},
+        e("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:4}},e("div",{style:{fontWeight:700,fontSize:13}},"💳 Plan: Pro"),e("span",{style:{background:"linear-gradient(135deg,#7C3AED,#00E5A0)",color:"#fff",fontSize:10,fontWeight:800,padding:"2px 8px",borderRadius:9}},"ACTIVE")),
+        e("div",{style:{fontSize:12,color:"#555",lineHeight:1.65}},"✅ AI phone reception · ✅ WhatsApp API · ✅ Auto reminders · ✅ Unlimited services"),
+        e("button",{onClick:function(){setShowCallSim(true);},style:{marginTop:10,padding:"8px 16px",border:"none",borderRadius:8,background:"#0277BD",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700}},"📞 Open Call Simulator"));
+    } else {
+      planBlock=e("div",{style:{background:"#FFFBEB",border:"1px solid #FCD34D",borderRadius:11,padding:14}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:4}},"💳 Plan: Starter"),
+        e("div",{style:{fontSize:12,color:"#78350F",marginBottom:9,lineHeight:1.65}},"Upgrade to Pro for AI phone reception, WhatsApp Business API, and auto reminders."),
+        e("button",{onClick:function(){setShowUpgrade(true);},style:{padding:"8px 18px",border:"none",borderRadius:8,background:"#7C3AED",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700}},"Upgrade to Pro →"));
+    }
+    content=e("div",null,
+      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:11}},"🏪 Business Info"),
+        [{l:"Business Name",k:"name"},{l:"Working Hours",k:"hours"},{l:"Address",k:"address"},{l:"Public phone",k:"phonePublic"}].map(function(f){
+          return e("div",{key:f.k,style:{marginBottom:11}},e("label",{style:{fontSize:11,fontWeight:700,color:"#666",display:"block",marginBottom:4}},f.l),e("input",{value:biz[f.k]||"",onChange:function(ev){var u={};u[f.k]=ev.target.value;setBiz(Object.assign({},biz,u));},style:F}));})),
+      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:6}},"🖼️ Branding"),
+        e("div",{style:{fontSize:11,color:"#888",marginBottom:10,lineHeight:1.5}},"Paste image URLs (upload to Supabase Storage bucket business-branding, then paste public URL). Logo & cover appear on customer chat."),
+        e("div",{style:{marginBottom:10}},e("label",{style:{fontSize:11,fontWeight:700,color:"#666",display:"block",marginBottom:4}},"Logo URL"),e("input",{value:biz.logoUrl||"",onChange:function(ev){setBiz(Object.assign({},biz,{logoUrl:ev.target.value}));},placeholder:"https://.../logo.png",style:F})),
+        e("div",{style:{marginBottom:10}},e("label",{style:{fontSize:11,fontWeight:700,color:"#666",display:"block",marginBottom:4}},"Cover image URL"),e("input",{value:biz.coverUrl||"",onChange:function(ev){setBiz(Object.assign({},biz,{coverUrl:ev.target.value}));},placeholder:"https://.../cover.jpg",style:F})),
+        biz.logoUrl?e("img",{src:biz.logoUrl,alt:"logo",style:{height:48,borderRadius:8,marginTop:4}}):null),
+      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:4}},"📞 Phone Numbers"),
+        e("div",{style:{background:"#EFF6FF",borderRadius:8,padding:"10px 12px",fontSize:12,color:"#1D4ED8",marginBottom:12,lineHeight:1.65}},e("strong",null,"How AI call reception works:"),e("br"),"1. Customer dials your ",e("strong",null,"Twilio number")," below",e("br"),"2. AI answers, books by voice",e("br"),"3. If customer says \"transfer me\" — AI dials your ",e("strong",null,"Owner number")," below"),
+        e("div",{style:{marginBottom:11}},
+          e("label",{style:{fontSize:11,fontWeight:700,color:"#555",display:"block",marginBottom:4}},"📱 Owner Mobile Number (private — AI transfers here)"),
+          e("input",{value:biz.ownerPhone||"",onChange:function(ev){setBiz(Object.assign({},biz,{ownerPhone:ev.target.value}));},placeholder:"+92 300 0000000 — your real mobile",style:F})),
+        e("div",null,
+          e("label",{style:{fontSize:11,fontWeight:700,color:"#555",display:"block",marginBottom:4}},"☎️ Twilio Business Number (public — customers call this)"),
+          e("input",{value:biz.twilioPhone||"",onChange:function(ev){setBiz(Object.assign({},biz,{twilioPhone:ev.target.value}));},placeholder:"+92 21 XXXXXXX — from Twilio.com",style:F}))),
+      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:7}},"📲 Customer Chat Links"),
+        e("div",{style:{fontSize:12,color:"#888",marginBottom:7}},"Share these. Customers see only the chat — never your dashboard."),
+        e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",marginBottom:6,wordBreak:"break-all"}},"Web: "+window.location.origin+"/chat/"+(biz.slug||user.email.split("@")[0])),
+        e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",wordBreak:"break-all"}},"WhatsApp: wa.me/"+(biz.twilioPhone||"923001234567").replace(/\D/g,"")+"?text=Hi, I want to book")),
+            planBlock,
+      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginTop:11,display:"flex",gap:8,flexWrap:"wrap"}},
+        e("a",{href:"/dashboard/billing",style:{padding:"8px 16px",border:"none",borderRadius:8,background:"#0277BD",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700,textDecoration:"none"}},"💳 Billing"),
+        isPro
+          ? e("a",{href:"/dashboard/whatsapp",style:{padding:"8px 16px",border:"none",borderRadius:8,background:"#25D366",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700,textDecoration:"none"}},"💬 Connect WhatsApp")
+          : e("button",{onClick:function(){setShowUpgrade(true);},style:{padding:"8px 16px",border:"none",borderRadius:8,background:"#CBD5E0",color:"#555",cursor:"pointer",fontSize:12,fontWeight:700}},"💬 WhatsApp (Pro)")
+      ));
+  }
+
+  var topBarNames=[e("span",{key:"t"},"BookAI Dashboard")];
+  if(isPro) topBarNames.push(e("span",{key:"pro",style:{background:"rgba(255,255,255,0.25)",fontSize:9,fontWeight:800,padding:"2px 7px",borderRadius:8,letterSpacing:"0.5px",marginLeft:6}},"PRO"));
+  var rc=[];
+  if(showUpgrade) rc.push(e(UpgradeModal,{key:"upg",color:color,onClose:function(){setShowUpgrade(false);},onConfirm:function(){window.location.href="/pricing";}}));
+  if(showCallSim) rc.push(e(CallSimulator,{key:"cs",biz:biz,appts:appts,onBook:onCallBook,onCancel:onCallCancel,ownerPhone:biz.ownerPhone||"Not set — add in Settings ⚙️",twilioNum:biz.twilioPhone||"Not set — add in Settings ⚙️",onClose:function(){setShowCallSim(false);}}));
+  rc.push(e("div",{key:"top",style:{background:color,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,boxShadow:"0 2px 10px rgba(0,0,0,0.2)"}},
+    e("div",{style:{display:"flex",alignItems:"center",gap:9}},e("span",{style:{fontSize:20}},"🤖"),e("div",null,e("div",{style:{color:"#fff",fontWeight:800,fontSize:13,display:"flex",alignItems:"center"}},topBarNames),e("div",{style:{color:"rgba(255,255,255,0.6)",fontSize:11}},biz.name))),
+    e("div",{style:{display:"flex",gap:7}},
+      e("button",{onClick:onPreviewChat,style:{background:"rgba(255,255,255,0.15)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:7,padding:"5px 11px",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:600}},"👁 Preview Chat"),
+      e("button",{onClick:onLogout,style:{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:7,padding:"5px 11px",color:"rgba(255,255,255,0.8)",cursor:"pointer",fontSize:12}},"Logout"))));
+  rc.push(e("div",{key:"tabs",style:{background:"#fff",borderBottom:"1px solid #E8E8E8",display:"flex",overflowX:"auto",flexShrink:0}},TABS.map(function(t){return e("button",{key:t.id,onClick:function(){setTab(t.id);},style:{padding:"10px 13px",border:"none",background:"transparent",cursor:"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap",flexShrink:0,color:tab===t.id?color:"#999",borderBottom:"2.5px solid "+(tab===t.id?color:"transparent")}},t.l);})));
+  rc.push(e("div",{key:"cnt",style:{flex:1,overflowY:"auto",padding:14}},content,e("div",{style:{height:18}})));
+  return e("div",{style:{height:"100vh",display:"flex",flexDirection:"column",background:"#F4F6F8"}},rc);
+}
+
+// CallSimulator — kept exactly as-is (no DB interaction needed here, handled via onCallBook/onCallCancel above)
+function CallSimulator(props){
+  var biz=props.biz,appts=props.appts,onBook=props.onBook,onCancel=props.onCancel,onClose=props.onClose;
+  var ownerPhone=props.ownerPhone||"Not set — add in Settings ⚙️";
+  var twilioNum=props.twilioNum||"Not set — add in Settings ⚙️";
+  var s1=useState("ringing"),phase=s1[0],setPhase=s1[1];
+  var s2=useState([]),log=s2[0],setLog=s2[1];
+  var s3=useState(0),secs=s3[0],setSecs=s3[1];
+  var s4=useState(""),status=s4[0],setStatus=s4[1];
+  var s5=useState(true),showT=s5[0],setShowT=s5[1];
+  var s6=useState(""),typeV=s6[0],setTypeV=s6[1];
+  var s7=useState(false),micOK=s7[0],setMicOK=s7[1];
+  var mounted=useRef(true),timerRef=useRef(null),recogRef=useRef(null),logRef=useRef(log),resumeRef=useRef(null);
+  var color=biz.color;
+  logRef.current=log;
+  useEffect(function(){
+    mounted.current=true;
+    if(navigator.permissions) navigator.permissions.query({name:"microphone"}).then(function(r){if(r.state==="granted")setMicOK(true);}).catch(function(){});
+    return function(){mounted.current=false;try{window.speechSynthesis&&window.speechSynthesis.cancel();}catch(ex){}try{recogRef.current&&recogRef.current.stop();}catch(ex){}timerRef.current&&clearInterval(timerRef.current);};
+  },[]);
+  useEffect(function(){
+    var t=setTimeout(function(){
+      if(!mounted.current)return;
+      timerRef.current=setInterval(function(){setSecs(function(s){return s+1;});},1000);
+      var greet="Thank you for calling "+biz.name+"! I'm your AI receptionist. How can I help you today?";
+      var sl=[{from:"ai",text:greet}];
+      setLog(sl);
+      var sh=[{role:"assistant",content:greet}];
+      resumeRef.current={currentLog:sl,history:sh};
+      runCycle(greet,sl,sh);
+    },2000);
+    return function(){clearTimeout(t);};
+  },[]);
+  function fmtTime(s){var m=Math.floor(s/60),r=s%60;return(m<10?"0":"")+m+":"+(r<10?"0":"")+r;}
+  function speakP(text){return new Promise(function(resolve){if(!mounted.current){resolve();return;}try{window.speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(text);u.rate=0.93;u.pitch=1.05;u.lang="en-US";var trySpeak=function(){var voices=window.speechSynthesis.getVoices();var best=voices.find(function(v){return v.lang.startsWith("en")&&/samantha|zira|google uk|google us/i.test(v.name);});if(!best)best=voices.find(function(v){return v.lang.startsWith("en");});if(best)u.voice=best;u.onend=resolve;u.onerror=resolve;window.speechSynthesis.speak(u);};if(window.speechSynthesis.getVoices().length>0){trySpeak();}else{window.speechSynthesis.onvoiceschanged=function(){trySpeak();};setTimeout(trySpeak,600);}}catch(ex){resolve();}});}
+  function listenP(){return new Promise(function(resolve,reject){var SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){reject(new Error("no_stt"));return;}navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){stream.getTracks().forEach(function(t){t.stop();});setMicOK(true);try{var r=new SR();r.lang="en-US";r.interimResults=false;r.maxAlternatives=1;r.continuous=false;r.onresult=function(ev){resolve(ev.results[0][0].transcript);};r.onerror=function(ev){if(ev.error==="no-speech"){reject(new Error("no_speech"));}else{reject(ev);}};recogRef.current=r;r.start();}catch(ex){reject(ex);}}).catch(function(err){reject(err);});});}
+  async function runCycle(lastAiText,currentLog,history){if(!mounted.current)return;setPhase("speaking");setStatus("AI is speaking…");await speakP(lastAiText);if(!mounted.current)return;setPhase("listening");setStatus("🎤 Listening… speak now");resumeRef.current={currentLog:currentLog,history:history};try{var ct=await listenP();if(!mounted.current)return;setStatus("Processing…");setPhase("processing");var nl=currentLog.concat([{from:"customer",text:ct}]);setLog(nl);var nh=history.concat([{role:"user",content:ct}]);await fetchAI(nl,nh);}catch(err){if(!mounted.current)return;setPhase("listening");if(err&&err.message==="no_speech"){setStatus("No speech detected — try again or type below");}else{setMicOK(false);setStatus("Mic unavailable — type reply below and press Send");}}}
+  async function fetchAI(currentLog,history){if(!mounted.current)return;try{var parsed=await callClaude(buildAIPrompt(biz,appts,true),history);var reply=parsed.message||"Sorry, could you say that again?";if(!mounted.current)return;var ul=currentLog.concat([{from:"ai",text:reply}]);setLog(ul);var uh=history.concat([{role:"assistant",content:reply}]);if(parsed.action==="book"&&parsed.appointment){var k=slotKey(parsed.appointment.date,parsed.appointment.time);if(!appts.find(function(a){return slotKey(a.date,a.time)===k;})){onBook(Object.assign({id:uid(),status:"confirmed",phone:parsed.appointment.phone||''},parsed.appointment));}await speakP(reply);if(mounted.current){timerRef.current&&clearInterval(timerRef.current);setPhase("booked");}return;}if(parsed.action==="cancel"&&parsed.appointment){onCancel(parsed.appointment.name);}if(parsed.action==="transfer"){await speakP(reply);if(mounted.current){timerRef.current&&clearInterval(timerRef.current);setPhase("transferring");}return;}await runCycle(reply,ul,uh);}catch(err){if(!mounted.current)return;var er="Sorry, connection issue. Please say that again.";setLog(function(p){return p.concat([{from:"ai",text:er}]);});setPhase("listening");setStatus("Connection issue — speak or type below");}}
+  async function submitType(){var text=typeV.trim();if(!text||phase==="processing")return;var ctx=resumeRef.current;if(!ctx)return;setTypeV("");setPhase("processing");setStatus("Processing…");var nl=ctx.currentLog.concat([{from:"customer",text:text}]);setLog(nl);var nh=ctx.history.concat([{role:"user",content:text}]);await fetchAI(nl,nh);}
+  async function requestMic(){try{var stream=await navigator.mediaDevices.getUserMedia({audio:true});stream.getTracks().forEach(function(t){t.stop();});setMicOK(true);setStatus("🎤 Mic enabled! Speak your reply now");var ctx=resumeRef.current;if(ctx&&(phase==="listening"||phase==="processing")){setPhase("listening");try{var ct=await listenP();if(!mounted.current)return;setPhase("processing");setStatus("Processing…");var nl=ctx.currentLog.concat([{from:"customer",text:ct}]);setLog(nl);await fetchAI(nl,ctx.history.concat([{role:"user",content:ct}]));}catch(e){setStatus("Speak or type below");}}}catch(e){setStatus("Mic permission denied — please type below");}}
+  function endCall(){timerRef.current&&clearInterval(timerRef.current);try{window.speechSynthesis.cancel();}catch(ex){}try{recogRef.current&&recogRef.current.stop();}catch(ex){}setPhase("ended");}
+  var mainContent;
+  if(phase==="ringing"){mainContent=e("div",{style:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}},e("div",{style:{width:100,height:100,borderRadius:"50%",background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:44,animation:"pulse 1s infinite"}},biz.emoji),e("div",{style:{color:"#fff",fontSize:17,fontWeight:700}},biz.name),e("div",{style:{color:"rgba(255,255,255,0.5)",fontSize:13}},"Connecting AI receptionist…"),e("div",{style:{fontSize:28,animation:"ring 0.8s infinite"}},"📞"));
+  } else if(phase==="transferring"){mainContent=e("div",{style:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,padding:20,textAlign:"center"}},e("div",{style:{fontSize:50,marginBottom:4}},"📲"),e("div",{style:{color:"#fff",fontSize:17,fontWeight:700}},"Transferring to owner…"),e("div",{style:{color:"rgba(255,255,255,0.5)",fontSize:13,marginBottom:14}},"AI has handed the call to the business owner."),e("div",{style:{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:14,padding:"16px 20px",width:"100%",textAlign:"left"}},e("div",{style:{fontSize:10,color:"rgba(255,255,255,0.35)",marginBottom:6,textTransform:"uppercase",letterSpacing:"1px"}},"Dialling owner number"),e("div",{style:{fontSize:20,fontWeight:800,color:"#00E5A0",fontFamily:"monospace",marginBottom:4}},"📞 "+ownerPhone),e("div",{style:{fontSize:10,color:"rgba(255,255,255,0.3)"}},"Customer called your Twilio number: "+twilioNum)),e("button",{onClick:onClose,style:{marginTop:14,padding:"10px 24px",border:"none",borderRadius:10,background:"#E53935",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700}},"End Simulation"));
+  } else if(phase==="booked"){var lastAI=log.filter(function(m){return m.from==="ai";}).slice(-1)[0];mainContent=e("div",{style:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,padding:20,textAlign:"center"}},e("div",{style:{fontSize:50}},"✅"),e("div",{style:{color:"#fff",fontSize:17,fontWeight:700}},"Appointment Booked!"),e("div",{style:{color:"rgba(255,255,255,0.5)",fontSize:13,maxWidth:280}},"AI confirmed the booking during the call. It's now in your dashboard."),lastAI?e("div",{style:{background:"rgba(0,229,160,0.08)",border:"1px solid rgba(0,229,160,0.2)",borderRadius:10,padding:"10px 14px",fontSize:12,color:"rgba(255,255,255,0.7)",maxWidth:"100%"}},lastAI.text):null,e("button",{onClick:onClose,style:{marginTop:8,padding:"11px 26px",border:"none",borderRadius:10,background:"#00E5A0",color:"#060B15",cursor:"pointer",fontSize:13,fontWeight:700}},"View in Dashboard"));
+  } else if(phase==="ended"){mainContent=e("div",{style:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,padding:20,textAlign:"center"}},e("div",{style:{fontSize:44}},"📞"),e("div",{style:{color:"#fff",fontSize:17,fontWeight:700}},"Call Ended"),e("div",{style:{color:"rgba(255,255,255,0.5)",fontSize:13}},"Duration: "+fmtTime(secs)),e("button",{onClick:onClose,style:{marginTop:8,padding:"11px 26px",border:"none",borderRadius:10,background:color,color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700}},"Back to Dashboard"));
+  } else {
+    var sc=phase==="listening"?"#FFD600":phase==="speaking"?"#00E5A0":"rgba(255,255,255,0.4)";
+    var oa=(phase==="speaking"||phase==="listening")?"pulse 0.9s infinite":"none";
+    var cl=e("div",{style:{overflowY:"auto",padding:"6px 14px",display:"flex",flexDirection:"column",gap:5,maxHeight:140}},log.map(function(m,i){return e("div",{key:i,style:{display:"flex",justifyContent:m.from==="customer"?"flex-end":"flex-start"}},e("div",{style:{maxWidth:"82%",background:m.from==="customer"?"rgba(0,229,160,0.12)":"rgba(255,255,255,0.06)",border:"1px solid "+(m.from==="customer"?"rgba(0,229,160,0.22)":"rgba(255,255,255,0.07)"),borderRadius:9,padding:"6px 10px",fontSize:11,color:"rgba(255,255,255,0.75)",lineHeight:1.5}},e("div",{style:{fontSize:8,fontWeight:800,color:m.from==="customer"?"#00E5A0":"rgba(255,255,255,0.3)",marginBottom:2,textTransform:"uppercase",letterSpacing:"0.5px"}},m.from==="customer"?"Caller":"AI"),m.text));}));
+    mainContent=e("div",{style:{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}},
+      e("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",padding:"14px 16px 8px",gap:8}},e("div",{style:{width:78,height:78,borderRadius:"50%",background:color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:34,animation:oa}},biz.emoji),e("div",{style:{color:"#fff",fontWeight:700,fontSize:13}},biz.name),e("div",{style:{display:"flex",alignItems:"center",gap:6}},e("div",{style:{width:7,height:7,borderRadius:"50%",background:sc,animation:"pulse 1s infinite"}}),e("div",{style:{color:sc,fontSize:12,fontWeight:600}},status)),e("div",{style:{color:"rgba(255,255,255,0.3)",fontSize:11}},fmtTime(secs))),
+      phase==="listening"?e("div",{style:{display:"flex",justifyContent:"center",alignItems:"flex-end",gap:3,height:28,padding:"0 20px"}},[2,4,6,9,7,11,8,5,10,7,4,8,6,3,7].map(function(h,i){return e("div",{key:i,style:{width:4,borderRadius:3,background:"#FFD600",opacity:0.75,height:(h*2.2)+"px",animation:"typing "+(0.7+i*0.07)+"s infinite",animationDelay:(i*0.05)+"s"}});})):e("div",{style:{height:28}}),
+      e("div",{style:{padding:"2px 14px",fontSize:9,fontWeight:700,color:"rgba(255,255,255,0.2)",textTransform:"uppercase",letterSpacing:"1px"}},"Call Transcript"),cl,
+      e("div",{style:{padding:"10px 14px",borderTop:"1px solid rgba(255,255,255,0.07)",background:"rgba(0,0,0,0.2)"}},
+        e("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}},e("div",{style:{fontSize:11,color:micOK?"#00E5A0":"#FFD600",fontWeight:600}},micOK?"🎤 Mic active — speak or type below":"⌨️ Type the caller's reply below"),!micOK?e("button",{onClick:requestMic,style:{padding:"4px 10px",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,background:"rgba(255,255,255,0.08)",color:"#FFD600",cursor:"pointer",fontSize:10,fontWeight:700}},"🎤 Enable Mic"):null),
+        e("div",{style:{display:"flex",gap:7,alignItems:"center"}},e("input",{value:typeV,onChange:function(ev){setTypeV(ev.target.value);},onKeyDown:function(ev){if(ev.key==="Enter")submitType();},placeholder:phase==="speaking"?"AI is speaking…":"Type caller reply, then press Send",disabled:phase==="speaking"||phase==="processing",style:{flex:1,padding:"10px 13px",borderRadius:18,border:"1px solid rgba(255,255,255,0.15)",background:(phase==="speaking"||phase==="processing")?"rgba(255,255,255,0.03)":"rgba(255,255,255,0.08)",color:"#fff",outline:"none",fontSize:13}}),e("button",{onClick:submitType,disabled:!typeV.trim()||phase==="speaking"||phase==="processing",style:{padding:"9px 16px",border:"none",borderRadius:18,background:(!typeV.trim()||phase==="speaking"||phase==="processing")?"rgba(255,255,255,0.08)":"#00E5A0",color:(!typeV.trim()||phase==="speaking"||phase==="processing")?"rgba(255,255,255,0.3)":"#060B15",cursor:(!typeV.trim()||phase==="speaking"||phase==="processing")?"default":"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap",flexShrink:0}},"Send →"))),
+      e("div",{style:{padding:"8px 14px 12px",display:"flex",justifyContent:"center"}},e("button",{onClick:endCall,style:{padding:"9px 22px",border:"none",borderRadius:22,background:"#E53935",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700}},"📞 End Call")));
+  }
+  return e("div",{style:{position:"fixed",inset:0,background:"#0A0E1A",zIndex:999,display:"flex",flexDirection:"column"}},e("div",{style:{padding:"11px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid rgba(255,255,255,0.07)"}},e("div",null,e("div",{style:{color:"rgba(255,255,255,0.45)",fontSize:10,fontWeight:800,letterSpacing:"0.8px",textTransform:"uppercase"}},"📞 PRO · AI Voice Call"),e("div",{style:{color:"rgba(255,255,255,0.25)",fontSize:9,marginTop:1}},"Customer dials → AI answers → books → transfers if needed")),e("button",{onClick:onClose,style:{background:"none",border:"none",color:"rgba(255,255,255,0.4)",fontSize:20,cursor:"pointer",padding:0}},"✕")),mainContent);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  APP ROUTER — session restore + Supabase-backed state
+// ═══════════════════════════════════════════════════════════════
+function App(){
+  var s1=useState("loading"),screen=s1[0],setScreen=s1[1];
+  var s2=useState(null),user=s2[0],setUser=s2[1];
+  var s3=useState(null),userId=s3[0],setUserId=s3[1];
+  var s4=useState(null),biz=s4[0],setRawBiz=s4[1];
+  var s5=useState([]),appts=s5[0],setAppts=s5[1];
+  var s6=useState(null),injectedMsg=s6[0],setInjectedMsg=s6[1];
+  var s7=useState(""),loadMsg=s7[0],setLoadMsg=s7[1];
+
+  // Restore session on page load
+  useEffect(function(){
+
+  var slug = new URLSearchParams(window.location.search).get("slug");
+
+  if(slug){
+
+    (async function(){
+
+      setLoadMsg("Loading business...");
+
+      console.log("Slug from URL:", slug);
+
+var res = await sb
+  .from("businesses")
+  .select("*")
+  .eq("slug", slug);
+
+console.log(JSON.stringify(res, null, 2));
+
+if (res.error) {
+  alert("ERROR: " + res.error.message);
+  return;
+}
+
+if (!res.data || res.data.length === 0) {
+  alert("No business found for slug: " + slug);
+  return;
+}
+
+var row = res.data[0];
+
+      setRawBiz({
+        type: row.type,
+        name: row.name,
+        slug: row.slug,
+        hours: row.hours,
+        address: row.address,
+        color: row.color,
+        light: row.light,
+        emoji: row.emoji,
+        services: row.services || [],
+        faqs: row.faqs || [],
+        greeting: row.greeting,
+        ownerPhone: row.owner_phone,
+        twilioPhone: row.twilio_phone,
+        plan: row.plan
+      });
+
+      setScreen("chat");
+
+    })();
+
+    return;
+  }
+
+  setLoadMsg("Checking session…");
+
+  sb.auth.getSession().then(async function(res){
+
+    var session = res.data.session;
+
+    if(session && session.user){
+
+      var uid2 = session.user.id;
+
+      var loadedBiz = await dbLoadBusiness(uid2);
+
+      if(loadedBiz){
+
+        var loadedAppts = await dbLoadAppts(uid2);
+
+        setUser(session.user);
+        setUserId(uid2);
+        setRawBiz(loadedBiz);
+        setAppts(loadedAppts);
+        setScreen("dashboard");
+
+      }else{
+
+        setScreen("landing");
+
+      }
+
+    }else{
+
+      setScreen("landing");
+
+    }
+
+  }).catch(function(){
+      setScreen("landing");
+  });
+
+  var sub = sb.auth.onAuthStateChange(function(event){
+      if(event==="SIGNED_OUT"){
+          setUser(null);
+          setUserId(null);
+          setRawBiz(null);
+          setAppts([]);
+          setScreen("landing");
+      }
+  });
+
+  return function(){
+      if(sub && sub.data && sub.data.subscription){
+          sub.data.subscription.unsubscribe();
+      }
+  };
+
+},[]);
+
+  // setBiz wrapped to auto-save to Supabase on every change
+  function setBiz(newBiz){
+  var safe = Object.assign({}, newBiz);
+  if(!Array.isArray(safe.services)) safe.services = [];
+  if(!Array.isArray(safe.faqs)) safe.faqs = [];
+  if(!Array.isArray(safe.gallery)) safe.gallery = [];
+  setRawBiz(safe);
+
+  if(userId && user){
+    dbSaveBusiness(userId, user.email, safe).catch(function(err){
+      console.error("dbSaveBusiness failed", err);
+    });
+  }
+}
+
+  function handleAuth(data){
+    setUser(data.user); setUserId(data.userId);
+    setRawBiz(data.biz); setAppts(data.appts||[]);
+    setScreen("dashboard");
+  }
+
+  async function handleLogout(){
+    await sb.auth.signOut();
+    setUser(null); setUserId(null); setRawBiz(null); setAppts([]);
+    setScreen("landing");
+  }
+
+  // handleBook: update state + persist to Supabase
+  async function handleBook(appt){
+  console.log("handleBook", appt);
+
+  if(!appt || !appt.name || !appt.service || !appt.date || !appt.time){
+    console.error("handleBook incomplete", appt);
+    return;
+  }
+
+  var k = slotKey(appt.date, appt.time);
+  if(appts.find(function(x){ return slotKey(x.date,x.time)===k; })) return;
+
+  if(!appt.id) appt.id = uid();
+  if(!appt.status) appt.status = "confirmed";
+
+  setAppts(function(prev){ return prev.concat([appt]); });
+
+  // Prefer API (service role) so public customer chat always saves
+  var slug = (biz && biz.slug) || "";
+  try{
+    if(slug){
+      var res = await fetch("/api/book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: appt.id,
+          slug: slug,
+          customer_name: appt.name,
+          service: appt.service,
+          date: appt.date,
+          time: appt.time,
+          phone: appt.phone || ""
+        })
+      });
+      var result = await res.json();
+      console.log("book API result", result);
+      if(!res.ok){
+        // Fallback: owner session write
+        if(userId) await dbAddAppt(userId, appt);
+        else console.error("Book failed", result);
+      }
+    } else if(userId){
+      await dbAddAppt(userId, appt);
+    } else {
+      console.error("No slug and no userId — cannot save booking");
+    }
+  }catch(err){
+    console.error("handleBook save error", err);
+    if(userId){
+      try{ await dbAddAppt(userId, appt); }catch(e2){ console.error(e2); }
+    }
+  }
+}
+
+  // handleCancel: update state + delete from Supabase by customer name
+  function handleCancel(name){
+    setAppts(function(prev){return prev.filter(function(a){return a.name.toLowerCase()!==name.toLowerCase();});});
+    if(userId) dbDeleteApptByName(userId,name).catch(console.error);
+  }
+
+  // handleDeleteAppt: update state + delete from Supabase by id (used in Dashboard ARow ✕)
+  function handleDeleteAppt(id){
+    setAppts(function(prev){return prev.filter(function(a){return a.id!==id;});});
+    dbDeleteApptById(id).catch(console.error);
+  }
+
+  if(screen==="loading") return e(LoadingScreen,{msg:loadMsg});
+  if(screen==="landing") return e(Landing,{onLogin:function(){setScreen("login");},onSignup:function(){setScreen("signup");}});
+  if(screen==="login"||screen==="signup") return e(AuthScreen,{mode:screen,onDone:handleAuth,onSwitch:function(){setScreen(screen==="login"?"signup":"login");},onBack:function(){setScreen("landing");}});
+  if(screen==="dashboard"&&user&&biz) return e(Dashboard,{user:user,userId:userId,biz:biz,setBiz:setBiz,appts:appts,setAppts:setAppts,onDeleteAppt:handleDeleteAppt,onLogout:handleLogout,onPreviewChat:function(){setScreen("chat");},setInjectedMsg:setInjectedMsg});
+  if(screen==="chat"&&biz) return e(CustomerChat,{biz:biz,appts:appts,onBook:handleBook,onCancel:handleCancel,injectedMsg:injectedMsg,showBack:!!user,onBack:function(){setInjectedMsg(null);setScreen("dashboard");}});
+  return e(LoadingScreen,{msg:"Loading…"});
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(e(App));
+})();
+</script>
+</body>
+</html>
+
+
+
+
+

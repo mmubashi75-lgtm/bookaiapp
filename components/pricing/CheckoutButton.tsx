@@ -4,6 +4,7 @@
 // so Paddle pre-fills the checkout and we can match the resulting
 // subscription back to their Supabase user via the webhook.
 import { useState } from "react";
+import { supabase } from "@/lib/supabase";
 import { getPaddle, PADDLE_PRICE_ID } from "@/lib/paddle";
 
 export default function CheckoutButton(props: {
@@ -15,27 +16,51 @@ export default function CheckoutButton(props: {
   const [opening, setOpening] = useState(false);
 
   async function handleClick() {
-    if (!PADDLE_PRICE_ID) {
-      alert("Checkout isn't configured yet — missing NEXT_PUBLIC_PADDLE_PRICE_ID.");
-      return;
-    }
-    setOpening(true);
-    try {
-      const paddle = await getPaddle();
-      if (!paddle) throw new Error("Paddle failed to load");
-
-      paddle.Checkout.open({
-        items: [{ priceId: PADDLE_PRICE_ID, quantity: 1 }],
-        ...(props.email ? { customer: { email: props.email } } : {}),
-        customData: props.userId ? { supabase_user_id: props.userId } : undefined,
-      });
-    } catch (err) {
-      console.error(err);
-      alert("Couldn't open checkout. Please try again in a moment.");
-    } finally {
-      setOpening(false);
-    }
+  if (!PADDLE_PRICE_ID) {
+    alert("Checkout isn't configured yet.");
+    return;
   }
+
+  // Require login
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    alert("Please log in before subscribing.");
+    window.location.href = "/bookai.html";
+    return;
+  }
+
+  setOpening(true);
+
+  try {
+    const paddle = await getPaddle();
+    if (!paddle) throw new Error("Paddle failed to load");
+
+    paddle.Checkout.open({
+      items: [
+        {
+          priceId: PADDLE_PRICE_ID,
+          quantity: 1,
+        },
+      ],
+
+      customer: {
+        email: user.email!,
+      },
+
+      customData: {
+        supabase_user_id: user.id,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    alert("Couldn't open checkout.");
+  } finally {
+    setOpening(false);
+  }
+}
 
   return (
     <button

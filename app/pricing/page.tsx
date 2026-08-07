@@ -1,3 +1,4 @@
+"use client";
 import Link from "next/link";
 import LocalizedPrice from "@/components/pricing/LocalizedPrice";
 import CheckoutButton from "@/components/pricing/CheckoutButton";

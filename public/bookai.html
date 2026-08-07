@@ -1170,7 +1170,7 @@ function Dashboard(props){
         e("div",null,
           e("label",{style:{fontSize:11,fontWeight:700,color:"#555",display:"block",marginBottom:4}},"☎️ Twilio Business Number (public — customers call this)"),
           e("input",{value:biz.twilioPhone||"",onChange:function(ev){setBiz(Object.assign({},biz,{twilioPhone:ev.target.value}));},placeholder:"+92 21 XXXXXXX — from Twilio.com",style:F}))),
-      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+      isPro && e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
         e("div",{style:{fontWeight:700,fontSize:13,marginBottom:7}},"📲 Customer Chat Links"),
         e("div",{style:{fontSize:12,color:"#888",marginBottom:7}},"Share these. Customers see only the chat — never your dashboard."),
         e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",marginBottom:6,wordBreak:"break-all"}},"Web: "+window.location.origin+"/chat/"+(biz.slug||user.email.split("@")[0])),

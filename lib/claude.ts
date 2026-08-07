@@ -1,18 +1,27 @@
 // ═══════════════════════════════════════════════════════════════
-//  SHARED CLAUDE CALLER
-//  Extracted from app/api/chat/route.js so the WhatsApp webhook
-//  (Feature 2) can reuse the exact same Claude call + response
-//  cleanup logic instead of duplicating it, per the "no duplicated
-//  AI logic" requirement. Logic below is copied verbatim from
-//  route.js — not rewritten.
+// SHARED CLAUDE CALLER
+// Used by chat, WhatsApp and other AI endpoints.
+// Cleans Claude responses and guarantees the customer never sees
+// leaked JSON, markdown or code.
+// Compatible with the latest Anthropic SDK.
 // ═══════════════════════════════════════════════════════════════
+
 import Anthropic from "@anthropic-ai/sdk";
 
+const apiKey = process.env.ANTHROPIC_API_KEY;
+
+if (!apiKey) {
+  throw new Error("ANTHROPIC_API_KEY is missing.");
+}
+
 const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || "sk-ant-placeholder",
+  apiKey,
 });
 
-export async function getAIResponse(systemPrompt: string, messages: any[]) {
+export async function getAIResponse(
+  systemPrompt: string,
+  messages: any[]
+) {
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1000,
@@ -20,8 +29,18 @@ export async function getAIResponse(systemPrompt: string, messages: any[]) {
     messages,
   });
 
-  let raw = response.content?.[0]?.text || "{}";
-  raw = raw.replace(/```json\n?|\n?```/g, "").trim();
+  // Find the first text block (latest SDK safe)
+  const textBlock = response.content.find(
+    (block) => block.type === "text"
+  );
+
+  let raw =
+    textBlock && "text" in textBlock
+      ? textBlock.text
+      : "{}";
+
+  // Remove markdown fences
+  raw = raw.replace(/```json\s*|\s*```/g, "").trim();
 
   let parsed: any;
 
@@ -35,32 +54,35 @@ export async function getAIResponse(systemPrompt: string, messages: any[]) {
     };
   }
 
-  let message = String(parsed.message || "");
+  let message = String(parsed.message ?? "");
 
-  // Remove any JSON object appended to the message (model sometimes echoes schema)
-  const firstBrace = message.indexOf("{");
-  if (firstBrace !== -1 && /["']message["']\s*:/.test(message.slice(firstBrace))) {
-    message = message.substring(0, firstBrace).trim();
-  }
-  // If the whole message is JSON, use parsed fields only
-  if (message.trim().startsWith("{")) {
-    try {
-      const inner = JSON.parse(message);
-      if (inner && inner.message) message = String(inner.message);
-    } catch {
-      /* keep */
-    }
+  // Sometimes Claude appends another JSON object after the message.
+  const jsonStart = message.indexOf('{"message"');
+
+  if (jsonStart !== -1) {
+    message = message.substring(0, jsonStart).trim();
   }
 
-  message = message.replace(/```[\s\S]*?```/g, "").trim();
+  // Remove any remaining JSON object
+  message = message.replace(
+    /\{[\s\S]*"action"[\s\S]*\}$/m,
+    ""
+  );
+
+  // Remove markdown/code blocks
+  message = message.replace(/```[\s\S]*?```/g, "");
+
+  // Remove inline JSON
+  message = message.replace(/\{[\s\S]*\}/g, "");
+
+  // Remove excessive blank lines
   message = message.replace(/\n{3,}/g, "\n\n");
 
-  // Final safety: drop a trailing raw JSON line
-  message = message.replace(/\n\s*\{[\s\S]*"action"[\s\S]*\}\s*$/g, "").trim();
+  message = message.trim();
 
   return {
     message,
-    action: parsed.action || null,
-    appointment: parsed.appointment || null,
+    action: parsed.action ?? null,
+    appointment: parsed.appointment ?? null,
   };
 }

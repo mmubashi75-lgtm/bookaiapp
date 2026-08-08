@@ -1170,12 +1170,16 @@ function Dashboard(props){
         e("div",null,
           e("label",{style:{fontSize:11,fontWeight:700,color:"#555",display:"block",marginBottom:4}},"☎️ Twilio Business Number (public — customers call this)"),
           e("input",{value:biz.twilioPhone||"",onChange:function(ev){setBiz(Object.assign({},biz,{twilioPhone:ev.target.value}));},placeholder:"+92 21 XXXXXXX — from Twilio.com",style:F}))),
-      isPro && e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
-        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:7}},"📲 Customer Chat Links"),
-        e("div",{style:{fontSize:12,color:"#888",marginBottom:7}},"Share these. Customers see only the chat — never your dashboard."),
-        e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",marginBottom:6,wordBreak:"break-all"}},"Web: "+window.location.origin+"/chat/"+(biz.slug||user.email.split("@")[0])),
-        e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",wordBreak:"break-all"}},"WhatsApp: wa.me/"+(biz.twilioPhone||"923001234567").replace(/\D/g,"")+"?text=Hi, I want to book")),
-            planBlock,
+      isPro
+  ? e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+      e("div",{style:{fontWeight:700,fontSize:13,marginBottom:7}},"📲 Customer Chat Links"),
+      e("div",{style:{fontSize:12,color:"#888",marginBottom:7}},"Share these. Customers see only the chat — never your dashboard."),
+      e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",marginBottom:6,wordBreak:"break-all"}},"Web: "+window.location.origin+"/chat/"+(biz.slug||user.email.split("@")[0])),
+      e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",wordBreak:"break-all"}},"WhatsApp: wa.me/"+(biz.twilioPhone||"923001234567").replace(/\D/g,"")+"?text=Hi, I want to book")
+    )
+  : null,
+
+planBlock,
       e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginTop:11,display:"flex",gap:8,flexWrap:"wrap"}},
         e("a",{href:"/dashboard/billing",style:{padding:"8px 16px",border:"none",borderRadius:8,background:"#0277BD",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700,textDecoration:"none"}},"💳 Billing"),
         isPro

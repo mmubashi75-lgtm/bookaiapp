@@ -541,11 +541,11 @@ function Landing(props){
     ),
     e("div",{style:{maxWidth:960,margin:"0 auto",padding:"40px 20px",borderTop:"1px solid rgba(255,255,255,0.05)"}},
       e("h2",{style:{textAlign:"center",fontSize:"clamp(18px,4vw,28px)",fontWeight:900,marginBottom:8}},"Everything your receptionist does — automated"),
-      e("p",{style:{textAlign:"center",color:"rgba(255,255,255,0.4)",marginBottom:30,fontSize:13}},"Save Rs. 15,000–25,000/month on staff. Zero sick days. Zero missed calls."),
+      e("p",{style:{textAlign:"center",color:"rgba(255,255,255,0.4)",marginBottom:30,fontSize:13}},"Save hundreds of dollars a month on front-desk staff. Zero sick days. Zero missed calls."),
       e("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))",gap:12}},features.map(featCard))),
     e("div",{style:{maxWidth:680,margin:"0 auto",padding:"44px 20px"}},
       e("h2",{style:{textAlign:"center",fontSize:"clamp(18px,4vw,28px)",fontWeight:900,marginBottom:8}},"Simple pricing"),
-      e("p",{style:{textAlign:"center",color:"rgba(255,255,255,0.4)",marginBottom:30,fontSize:13}},"One plan. Everything included. Localized checkout · cancel anytime."),
+      e("p",{style:{textAlign:"center",color:"rgba(255,255,255,0.4)",marginBottom:30,fontSize:13}},"One clear monthly plan. Voice minutes included. Cancel anytime."),
       e("div",{style:{display:"grid",gridTemplateColumns:"1fr",gap:14,maxWidth:420,margin:"0 auto"}},plans.map(planCard))),
     e("div",{style:{padding:"22px 20px",borderTop:"1px solid rgba(255,255,255,0.06)",textAlign:"center",color:"rgba(255,255,255,0.28)",fontSize:12}},
       e("div",{style:{fontWeight:900,fontSize:16,marginBottom:5,background:G,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",display:"inline-block"}},"🤖 BookAI"),
@@ -622,9 +622,7 @@ for(var i=0;i<seed.length;i++){
 // Sign out immediately after signup
 await sb.auth.signOut();
 
-alert(
-  "Your account has been created successfully.It is now waiting for admin approval. You will be able to log in after approval."
-);
+alert("Account created successfully.\n\nPlease wait for admin approval.\nYou will be able to log in only after your account is approved.");
 
 setBusy(false);
 onBack();
@@ -1219,11 +1217,16 @@ function Dashboard(props){
         e("div",null,
           e("label",{style:{fontSize:11,fontWeight:700,color:"#555",display:"block",marginBottom:4}},"☎️ Twilio Business Number (public — customers call this)"),
           e("input",{value:biz.twilioPhone||"",onChange:function(ev){setBiz(Object.assign({},biz,{twilioPhone:ev.target.value}));},placeholder:"+92 21 XXXXXXX — from Twilio.com",style:F}))),
-      e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
-        e("div",{style:{fontWeight:700,fontSize:13,marginBottom:7}},"📲 Customer Chat Links"),
-        e("div",{style:{fontSize:12,color:"#888",marginBottom:7}},"Share these. Customers see only the chat — never your dashboard."),
-        e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",marginBottom:6,wordBreak:"break-all"}},"Web: "+window.location.origin+"/chat/"+(biz.slug||user.email.split("@")[0])),
-        e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",wordBreak:"break-all"}},"WhatsApp: wa.me/"+(biz.twilioPhone||"923001234567").replace(/\D/g,"")+"?text=Hi, I want to book")),
+      isPro
+        ? e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:11}},
+            e("div",{style:{fontWeight:700,fontSize:13,marginBottom:7}},"📲 Customer Chat Links"),
+            e("div",{style:{fontSize:12,color:"#888",marginBottom:7}},"Share these. Customers see only the chat — never your dashboard."),
+            e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",marginBottom:6,wordBreak:"break-all"}},"Web: "+window.location.origin+"/chat/"+(biz.slug||user.email.split("@")[0])),
+            e("div",{style:{background:"#F8F9FA",borderRadius:7,padding:"9px 11px",fontSize:11,fontFamily:"monospace",wordBreak:"break-all"}},"WhatsApp: wa.me/"+(biz.twilioPhone||"923001234567").replace(/\D/g,"")+"?text=Hi, I want to book"))
+        : e("div",{style:{background:"#FFFBEB",border:"1px solid #FCD34D",borderRadius:11,padding:14,marginBottom:11}},
+            e("div",{style:{fontWeight:700,fontSize:13,marginBottom:6}},"📲 Customer Chat Links"),
+            e("div",{style:{fontSize:12,color:"#78350F",lineHeight:1.6,marginBottom:10}},"🔒 Chat links unlock after you subscribe. Set up your business, then go Pro to share live links with customers."),
+            e("button",{onClick:function(){window.location.href="/pricing";},style:{padding:"8px 16px",border:"none",borderRadius:8,background:"#7C3AED",color:"#fff",cursor:"pointer",fontSize:12,fontWeight:700}},"Subscribe to unlock →")),
             planBlock,
       voiceBlock,
       e("div",{style:{background:"#fff",borderRadius:11,padding:14,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginTop:11,display:"flex",gap:8,flexWrap:"wrap"}},
@@ -1392,19 +1395,25 @@ var row = res.data[0];
       var loadedBiz = await dbLoadBusiness(uid2);
 
       if(loadedBiz){
-
-        var loadedAppts = await dbLoadAppts(uid2);
-
-        setUser(session.user);
-        setUserId(uid2);
-        setRawBiz(loadedBiz);
-        setAppts(loadedAppts);
-        setScreen("dashboard");
-
+        var st = loadedBiz.approval_status || "pending";
+        if(st === "pending" || st === "rejected"){
+          await sb.auth.signOut();
+          setScreen("landing");
+          if(st === "pending"){
+            setTimeout(function(){ alert("Your account is awaiting admin approval. You can log in after approval."); }, 300);
+          } else {
+            setTimeout(function(){ alert("Your account has been rejected. Please contact support."); }, 300);
+          }
+        } else {
+          var loadedAppts = await dbLoadAppts(uid2);
+          setUser(session.user);
+          setUserId(uid2);
+          setRawBiz(loadedBiz);
+          setAppts(loadedAppts);
+          setScreen("dashboard");
+        }
       }else{
-
         setScreen("landing");
-
       }
 
     }else{

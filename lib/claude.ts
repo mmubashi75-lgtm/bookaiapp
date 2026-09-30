@@ -20,7 +20,11 @@ export async function getAIResponse(systemPrompt: string, messages: any[]) {
     messages,
   });
 
-  let raw = response.content?.[0]?.text || "{}";
+  const textBlock = response.content?.find(
+  (block) => block.type === "text"
+);
+
+let raw = textBlock?.type === "text" ? textBlock.text : "{}";
   raw = raw.replace(/```json\n?|\n?```/g, "").trim();
 
   let parsed: any;
